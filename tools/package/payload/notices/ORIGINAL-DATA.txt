@@ -1,0 +1,8 @@
+Original game data is not included in this archive.
+
+Use an original installation that you are authorized to use. Import happens
+locally. The implementation's MIT license and ymfm's BSD license do not grant
+rights to original game data, executable files, artwork, text or audio.
+
+This is an independent reimplementation. It is not endorsed by the original
+game's copyright or trademark owners. No original game license is conveyed.

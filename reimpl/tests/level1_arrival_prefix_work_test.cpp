@@ -1,0 +1,8 @@
+#include "arrival_prefix_fixtures.hpp"
+int main(){using namespace arrival_prefix_fixture;const auto seed=input();const auto first=run(seed);const auto& a=first.bonus.prefix.damage.combat.prefix;assert(a.entities[0].position==seed.prefix.entities[0].position);assert(a.entities[0].yawVelocity==0&&a.entities[0].stateBytes4dTo52[5]==0);assert(std::find(a.activeOrder.begin(),a.activeOrder.end(),Level1ObjectRef{Level1PresentationKind::entity,0})!=a.activeOrder.end());assert(!a.refreshRequested&&a.rng.calls()==seed.prefix.rng.calls());const auto incoming=carry(first);const auto second=run(incoming);const auto& b=second.bonus.prefix.damage.combat.prefix;assert(b.entities[0].position.y==a.entities[0].position.y+400);assert(b.entities[0].position.x==a.entities[0].position.x&&b.rng.calls()==a.rng.calls());assert(first.bonus.prefix.targetHits.empty()&&second.bonus.prefix.targetHits.empty());
+ const auto alias=withReusedOwnerShot(seed);const auto aliased=run(alias);assert(aliased.bonus.prefix.damage.combat.prefix.projectiles[0].ownerAllocationIndex==0&&aliased.bonus.prefix.damage.combat.prefix.projectiles[0].stateBytes4dTo54[1]==9);
+ auto badOwner=alias;badOwner.prefix.projectiles[0].ownerAllocationIndex=1;arrival_fixture::rejects([&]{run(badOwner);});
+ auto malformed=seed;malformed.prefix.entities[0].stateBytes4dTo52[5]=3;arrival_fixture::rejects([&]{run(malformed);});
+ std::array<std::int8_t,7> systems{};systems.fill(3);std::array<std::int16_t,7> timers{};const std::vector<IndexedBitmap> art;
+ arrival_fixture::rejects([&]{level1BonusPickupPrefixOperations(seed,profile(),font(),CockpitPageState::fromRecoveredMenu(),256,bonusModel(),{systems,timers,-1,art});});
+}

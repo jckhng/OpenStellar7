@@ -1,0 +1,17 @@
+Microsoft Visual C++ runtime
+
+This Windows x64 build statically links the Microsoft Visual C++ runtime.
+No separate msvcp140.dll or vcruntime140*.dll is bundled or required by the
+application or selected SDL2.dll. The package auditor checks their PE imports.
+
+Microsoft runtime code is separate from the implementation's MIT license and
+ymfm's BSD license. Its use and redistribution are governed by the applicable
+Microsoft Visual Studio license/distributable-code terms.
+
+Distributable Code for Microsoft Visual Studio 2022
+(Includes Utilities & BuildServer Files)
+For the latest version of this Redist file, please visit:
+  https://aka.ms/vs/17/redist.txt
+
+Windows system libraries remain operating-system dependencies. No system DLLs,
+runtime installer or development tool is included. No runtime download occurs.

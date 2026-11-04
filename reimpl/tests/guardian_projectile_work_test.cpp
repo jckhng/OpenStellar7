@@ -1,0 +1,3 @@
+#include "guardian_projectile_fixtures.hpp"
+#include <iostream>
+int main(){using namespace deployment_fixture;for(const auto& c:updates){const auto w=run(c);const auto& p=w.damage.combat.prefix;if(!same(Steps{observed(w)},Steps{c.operations})){std::cerr<<"work "<<c.label<<'\n';return 1;}if(normalize(record(p.projectiles[0]))!=normalize(c.shot)){std::cerr<<"shot "<<c.label<<'\n';return 1;}if(w.damage.armor!=c.armor||p.allocationOrder.size()!=static_cast<unsigned>(c.count)){return 1;}auto effect=record(w.effects[0].entity);effect[0x1a]=effect[0x1b]=0;auto expected=c.effect;expected[0x1a]=expected[0x1b]=0;if(normalize(effect)!=normalize(expected)){std::cerr<<"effect "<<c.label<<'\n';return 1;}}}

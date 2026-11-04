@@ -1,0 +1,5 @@
+# Preserve the exact bytes recorded in SOURCE_MANIFEST.json across checkouts.
+# Installed shell scripts receive executable permissions through CMake.
+* -text
+# Recognize preserved CRLF as an end of line during Git whitespace review.
+* whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

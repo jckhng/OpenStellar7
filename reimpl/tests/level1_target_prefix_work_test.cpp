@@ -1,0 +1,177 @@
+#include "stellar7/gameplay.hpp"
+#include "stellar7/simulation_prefix_work.hpp"
+#include "stellar7/level1_periodic_spawn_work.hpp"
+
+#include <algorithm>
+#include <cassert>
+#include <memory>
+#include <stdexcept>
+
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#include <stdlib.h>
+#endif
+
+namespace {
+using namespace stellar7;
+template<class Action> void rejects(Action action) {
+    bool rejected=false;
+    try { action(); } catch (const std::invalid_argument&) { rejected=true; }
+    assert(rejected);
+}
+struct Ground final : Level1FrameRenderer {
+    void render(Level1RenderState state) override {
+        state.ground.advance(state.player.yawVelocity,state.player.forwardVelocity,state.rng);
+    }
+};
+BitmapFont font() {
+    return {32,8,0,std::vector<IndexedBitmap>(96,{4,8,std::vector<std::uint8_t>(32,1)})};
+}
+Level1TargetPrefixProfile profile() {
+    Level1EnemyPrefixProfile enemy{1,256,{0,441},{0,134},Level1ProjectileAllocationDomain::retained,
+        Level1ActorContactDomain::ordinaryActors,Level1OrdinaryMembership::periodicSpawned};
+    return {{enemy,680,0,0,0,Level1DamagePaletteMode::residentVga,Level1PlayerCombatDomain::expiryAndLoss},0};
+}
+Level1TargetPrefixInput initial(const std::uint8_t health,const bool shotFirst) {
+    auto model=std::unique_ptr<GameplayModel>(new GameplayModel(GameplayModel::fromNativeStartup()));
+    Ground ground;
+    model->tickRetainedLevel1({},ground);
+    model->finishLevel1Frame();
+    const auto& state=model->level1State();
+    Level1TargetPrefixInput result{{state.player(),state.entities(),state.projectiles(),{}, {},{},
+        false,state.rng(),0,false,0,true,{false,false}},{},{},2,0};
+    auto& actor=result.prefix.entities[0];
+    actor.position={12000,4000,0};
+    actor.stateBytes4dTo52[1]=health;
+    actor.stateBytes4dTo52[5]=1;
+    actor.behaviorTimer=10;
+    actor.forwardVelocity=0;
+    actor.yawVelocity=0;
+    actor.weaponCooldown=255;
+    auto& shot=result.prefix.projectiles[0];
+    shot.type=23; shot.collisionRadius=134;
+    shot.position={12000,3500,0}; shot.yaw=0;
+    shot.forwardVelocity=500; shot.stateBytes4dTo54={253,10,0,0,0,0,0,0};
+    shot.ownerIsPlayer=true;
+    for (std::size_t index=0;index<result.prefix.entities.size();++index) {
+        result.prefix.allocationOrder.push_back({Level1PresentationKind::entity,index});
+        result.prefix.activeOrder.push_back({Level1PresentationKind::entity,index});
+    }
+    result.prefix.allocationOrder.push_back({Level1PresentationKind::projectile,0});
+    if (shotFirst) { result.prefix.activeOrder.insert(result.prefix.activeOrder.begin(),{Level1PresentationKind::projectile,0}); }
+    else { result.prefix.activeOrder.push_back({Level1PresentationKind::projectile,0}); }
+    //Source0BC8 partial writes must preserve unrelated reused FC fields.
+    auto& effect=result.effects[0];
+    effect.entity.flags=0x23;
+    effect.entity.collisionRadius=655;
+    effect.entity.pitch=19;
+    effect.entity.presenterDistance=777;
+    effect.entity.targetHeading=888;
+    effect.projected={41,42};
+    return result;
+}
+Level1TargetPrefixInput carry(const Level1TargetPrefixWork& value) {
+    const auto& prefix=value.damage.combat.prefix;
+    return {{prefix.player,prefix.entities,prefix.projectiles,prefix.allocationOrder,prefix.activeOrder,
+        prefix.lastListCamera,prefix.refreshRequested,prefix.rng,value.damage.fadeTicks,false,0,true,{false,false}},
+        value.effects,value.bonus,value.activeEnemies,value.score};
+}
+bool has(const std::vector<Level1ObjectRef>& order,const Level1ObjectRef ref) {
+    return std::find(order.begin(),order.end(),ref)!=order.end();
+}
+void reusedOrdinaryPrefix() {
+    auto input=initial(2,false);
+    const Level1ObjectRef recycled{Level1PresentationKind::entity,0};
+    const Level1ObjectRef shot{Level1PresentationKind::projectile,0};
+    for(auto* order:{&input.prefix.allocationOrder,&input.prefix.activeOrder}) {
+        order->erase(std::remove(order->begin(),order->end(),recycled),order->end());
+        order->erase(std::remove(order->begin(),order->end(),shot),order->end());
+    }
+    input.prefix.projectiles[0].stateBytes4dTo54[1]=0;
+    Level1PeriodicSpawnInput spawnInput{1,2,10,5,6,{}};
+    spawnInput.ordinaryPool[0]={0,false,0};
+    spawnInput.ordinaryPool[1]={1,true,1};
+    std::array<std::uint16_t,StellarRng::wordCount> table{};
+    table[55]=43525; table[54]=3332; table[53]=43981;
+    std::vector<Model3d> models(44);
+    models[11].collisionRadius=748; models[11].flags=1; models[11].animationLimits={8};
+    const auto birth=level1PeriodicSpawnOperations(spawnInput,StellarRng(table,48,110,0,0),models);
+    assert(birth.spawn && birth.provider && birth.spawn->actor.type==11 && birth.spawn->actor.allocationIndex==0);
+    input.prefix.entities[0]=birth.spawn->actor;
+    input.prefix.allocationOrder.push_back(recycled);
+    input.prefix.refreshRequested=birth.spawn->refreshRequested;
+    input.prefix.rng=birth.rng;
+    input.activeEnemies=birth.spawn->activeEnemies;
+    auto config=profile(); config.targetDomain=Level1TargetHitDomain::initialOrdinary;
+    const auto result=level1TargetPrefixOperations(input,config,font(),CockpitPageState::fromRecoveredMenu());
+    assert(result.damage.combat.prefix.entities[0].position==birth.spawn->actor.position);
+    assert(has(result.damage.combat.prefix.activeOrder,recycled));
+    auto nextConfig=config; ++nextConfig.damage.enemy.loopTick;
+    const auto next=level1TargetPrefixOperations(carry(result),nextConfig,font(),CockpitPageState::fromRecoveredMenu());
+    assert(!(next.damage.combat.prefix.entities[0].position==birth.spawn->actor.position));
+    auto noRefresh=input; noRefresh.prefix.refreshRequested=false;
+    rejects([&] {level1TargetPrefixOperations(noRefresh,config,font(),CockpitPageState::fromRecoveredMenu());});
+    auto stale=input; stale.prefix.entities[0].behaviorTimer=1;
+    rejects([&] {level1TargetPrefixOperations(stale,config,font(),CockpitPageState::fromRecoveredMenu());});
+    auto strict=config.damage.enemy; strict.membership=Level1OrdinaryMembership::initialSix;
+    rejects([&] {level1EnemyPrefixOperations(input.prefix,strict);});
+}
+}
+int main() {
+#ifdef _MSC_VER
+    _CrtSetReportMode(_CRT_ASSERT,_CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT,_CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0,_WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    reusedOrdinaryPrefix();
+    using namespace stellar7;
+    const auto scoreFont=font();
+    const auto pages=CockpitPageState::fromRecoveredMenu();
+    for (const bool shotFirst : {false,true}) {
+        for (const std::uint8_t health : {std::uint8_t{1},std::uint8_t{2}}) {
+            auto input=initial(health,shotFirst);
+            const auto result=level1TargetPrefixOperations(input,profile(),scoreFont,pages);
+            const auto& work=result.damage.combat.prefix;
+            assert(result.targetHits.size()==1 && result.targetHits[0].targetIndex==0);
+            assert(work.entities[0].stateBytes4dTo52[1]==health-1);
+            assert(work.entities[0].stateBytes4dTo52[0]==255 && work.entities[0].stateBytes4dTo52[4]==1);
+            //Terminal health0 still runs its old-list callback before late rebuild.
+            assert(work.entities[0].behaviorTimer==9);
+            assert(!work.projectiles[0].active() && !has(work.allocationOrder,{Level1PresentationKind::projectile,0}));
+            assert(result.effects[0].listed && has(work.activeOrder,{Level1PresentationKind::deathEffect,0}));
+            const auto& effect=result.effects[0];
+            assert(effect.entity.flags==0x23 && effect.entity.collisionRadius==655 && effect.entity.pitch==19);
+            assert(effect.entity.presenterDistance==777 && effect.entity.targetHeading==888);
+            assert((effect.projected==ProjectedPoint{41,42}));
+            assert(effect.entity.stateBytes4dTo52[1]==result.targetHits[0].work.effect->age);
+            assert(result.score==(health==1 ? 20U : 0U) && result.activeEnemies==(health==1 ? 1 : 2));
+            assert(result.scoreSteps.size()==(health==1 ? 1U : 0U));
+            assert(has(work.activeOrder,{Level1PresentationKind::entity,0})==(health!=1));
+            const auto event=health==1 ? 6 : 5;
+            assert(result.damage.combat.audioEvents.size()==1 && result.damage.combat.audioEvents[0].eventId==event);
+            unsigned markers=0;
+            for (const auto& operation : work.operations) {
+                if (operation.kind==NormalWorkKind::gameplayTargetHitEvent) {
+                    assert(operation.count==1 && operation.value==event); ++markers;
+                }
+            }
+            assert(markers==1);
+            auto nextProfile=profile(); nextProfile.damage.enemy.loopTick=2;
+            const auto next=level1TargetPrefixOperations(carry(result),nextProfile,scoreFont,pages);
+            assert(next.targetHits.empty() && next.scoreSteps.empty() && next.score==result.score);
+            //Prefix computes FC presenter fields but never performs main0AC8 age.
+            assert(next.effects[0].entity.stateBytes4dTo52[1]==effect.entity.stateBytes4dTo52[1]);
+            rejects([&] { level1DamagePrefixOperations(input.prefix,profile().damage); });
+        }
+    }
+    auto input=initial(1,true);
+    input.bonus={1,2};
+    rejects([&] { level1TargetPrefixOperations(input,profile(),scoreFont,pages); });
+    input=initial(1,true);
+    input.prefix.allocationOrder.push_back(input.prefix.allocationOrder.front());
+    rejects([&] { level1TargetPrefixOperations(input,profile(),scoreFont,pages); });
+    input=initial(1,true);
+    auto unsupported=profile(); unsupported.difficulty=1;
+    rejects([&] { level1TargetPrefixOperations(input,unsupported,scoreFont,pages); });
+    return 0;
+}

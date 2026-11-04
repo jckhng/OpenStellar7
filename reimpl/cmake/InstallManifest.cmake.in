@@ -1,0 +1,34 @@
+set(root "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(files "@package_files@")
+set(entries "")
+set(separator "")
+foreach(name IN LISTS files)
+    file(SHA256 "${root}/${name}" digest)
+    file(SIZE "${root}/${name}" bytes)
+    string(APPEND entries "${separator}\n    \"${name}\": {\"bytes\": ${bytes}, \"sha256\": \"${digest}\"}")
+    set(separator ",")
+endforeach()
+set(sdl_hash "")
+if(EXISTS "${root}/SDL2.dll")
+    file(SHA256 "${root}/SDL2.dll" sdl_hash)
+endif()
+set(manifest [=[{
+  "formatVersion": 2,
+  "application": "Stellar7 native reimplementation",
+  "version": "@STELLAR7_PACKAGE_VERSION@",
+  "platform": "@package_platform@",
+  "entryPoint": "@package_entry@",
+  "assetsBundled": false,
+  "defaultProfile": "@package_profile@",
+  "runtime": "@package_runtime@",
+  "sdlVersion": "@package_sdl_version@",
+  "sdlRuntimeSha256": "__SDL_HASH__",
+  "vendorRuntimeSymbolReferencesRetained": true,
+  "projectWorkspacePathsBundled": false,
+  "files": {__FILES__
+  }
+}
+]=])
+string(REPLACE "__FILES__" "${entries}" manifest "${manifest}")
+string(REPLACE "__SDL_HASH__" "${sdl_hash}" manifest "${manifest}")
+file(WRITE "${root}/manifest.json" "${manifest}")

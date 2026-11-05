@@ -89,6 +89,70 @@ CHECKSUMS.sha256 to identify the packaged source and binaries.
 
 ### Recorded engine coverage
 
+`stellar7_playable_full_campaign_tests` makes the current Easy route reproducible
+from this checkout and player-supplied supported resources. See BUILDING.md for
+the build/CTest command. It verifies the supported data hashes, creates an empty
+in-memory high-score/profile store and uses the production asset loader. It never
+reads or writes the player's FAME.HAL. It needs no harness, private pilot, replay
+directory, DOS executable, captured state or save snapshot.
+
+The versioned `reimpl/tests/fixtures/easy_campaign.inputs.txt` stores only held
+controls, system actions and name text. Each run is `count phase bank keys action
+text`; phase/bank are checked preconditions, never state assignments. Banks are
+one-based; bank 8 is the ending sentinel. Key bits are left/right/forward/reverse/
+fire/confirm at bits 0-5. `-` means no text. Enum values match gameplay.hpp.
+Its 27,733 calls retain the previous 27,728-call gameplay controls and add five
+name/Hall polls: an empty table also ranks the second death's score. No original
+profile entries are distributed.
+
+The run retains each model/synth/device owner across seven levels, two deaths and
+Continues, ending/Hall/title and a new Begin plus two adjacent frames. Work budgets
+10,000 and 257 compare retained state, including inactive physical pool records,
+aliases, RNG, pages, indexed pixels/palette, PCM and ordered events/OPL writes.
+The first five expected decimal fields retain the pre-combat-extraction sample
+count and FNV-1a digests of selected state/clock observations, delivered
+pixels/palettes, PCM deliveries and ordered audio events/OPL writes. The sixth
+digest was recorded before the projectile-lifetime extraction. It covers live
+projectile records, compact-to-physical slot mappings, active masks and all
+physical projectile records, including retired slots. Fields use explicit
+little-endian serialization. These expectations guard native behavior across
+refactors. Keep them fixed when investigating a regression.
+
+This is a long-running milestone check (`full-campaign` CTest label). Keep focused
+combat/contact tests in the edit loop. The route covers Easy with keyboard,
+music/story off and recovered indexed rendering; it does not certify every input,
+Standard/Hard victories, enhanced/XR visuals or physical audio/controller behavior.
+Existing original-backed checks and historical replay expectations remain separate.
+
+Fresh Windows/MSVC and Ubuntu 24.04/GCC runs on 2026-11-05 passed the owned-profile
+route with 18,203,406 samples and the same frozen digests after behavior-adapter
+extraction. The targeted cohort passed 13 Windows and six Linux tests, including
+ordinary/guardian policy, retired guardian emission and Type 6 visibility.
+Controlled reversed-order cases verify last-solid player response and first-hostile
+retirement followed by the remaining shot on the adjacent frame. They passed on
+both the pre-extraction and extracted Windows engines, without changing campaign
+inputs or expected digests. The resource-free allocation contract checks swap-back
+order, compact/physical identity remapping, continuation-dependent presenter
+caches and pending effect-slot reuse. Full-route wall time was about 2.4 minutes
+on Linux and 3.6 minutes on Windows with concurrent checks.
+
+The Level 3 guardian extraction passed the same full-campaign digests on Windows
+and Ubuntu. The animation fixture passed on both platforms, and the legacy replay
+matched all five trace files byte for byte.
+
+The registered `stellar7_playable_level3_combat_retry_tests` uses the A50E
+approach controls with firing held back until the first Type 47 emission, then
+releases all controls. Live combat causes death at tick 1844 with the required
+wave/craft/A50E/emission ancestry. The original assertions still check Continue,
+the constructor RNG words and three adjacent frames after retry. The revised
+route also passes on the pre-extraction Windows engine.
+
+The registered `stellar7_playable_level3_progression_tests` clears surviving
+Type 47 minions before collecting the guardian reward. It reaches Level 4 and
+advances three frames there after 4,643 Level 3 combat frames. The existing
+assertions cover the reward and guardian defeat, destination selection, and the
+Level 4 constructor RNG and frame continuity.
+
 The retained Easy route completed all seven levels, two death/Continue cycles,
 ending/Hall/title and a new Begin plus two frames, using 27,728 calls and
 18,197,743 samples. Cleanup comparisons retained state, audio and presentation

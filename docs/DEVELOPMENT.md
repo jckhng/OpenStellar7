@@ -15,7 +15,11 @@ the player and decoded at startup.
 | Campaign coordination and sample-clock deliveries | `native_playable_campaign.cpp` and the other `native_*` session modules |
 | Simulation state and ordered frame dispatch | `gameplay.cpp`, `include/stellar7/gameplay.hpp` |
 | Lifecycle, loading and physical record reuse | `playable_campaign_lifecycle.cpp`, `playable_campaign_loader.cpp`, `campaign_entity_pools.cpp`, `campaign_enemy_projectiles.cpp` |
+| Frame retirement, effect allocation and reward placement | `campaign_allocation.cpp`, `campaign_reward.cpp`; borrowed retirement bookkeeping in `campaign_allocation.hpp` |
 | Ordinary/guardian behavior | `ordinary_behavior.cpp`, `campaign_guardian.cpp`, `campaign_guardian_children.cpp`, `level5_guardian.cpp` |
+| Behavior adapters and physical writeback | `campaign_ordinary_adapter.cpp`, `campaign_guardian_adapter.cpp` |
+| Contact geometry and ordered hit application | `campaign_combat.cpp` |
+| Player, player-shot and actor/hostile-shot contact passes | `campaign_player_contact.cpp`, `campaign_projectile_hits.cpp`, `campaign_actor_contact.cpp` |
 | Presentation snapshots and animation callbacks | `campaign_presentation.cpp` |
 | Indexed rasterization, clipping and enhanced scene observation | `gameplay_renderer.cpp`; small shared helpers in `gameplay_render_support.cpp` |
 | Enhanced/spatial/XR views | `world_presentation.cpp`, `spatial_scene.cpp`, `spatial_view.cpp`, `chase_view.cpp`, `xr_presentation.cpp` |
@@ -61,10 +65,72 @@ comparison and swap order and runs only when pool membership permits it. Boundar
 identities remain a frame-local value; remapping reads the live pool maps after
 compaction instead of retaining stale compact indices.
 
-The main frame dispatcher remains large and coupled. Further branch/context
-refactoring is documented debt, not evidence of global DOS equivalence. Before
-changing it, identify affected aliases and compare retained state, indexed pixels
-and palette, ordered audio and device phase at the relevant boundaries.
+`campaign_combat.cpp` keeps the inclusive box-contact predicate, physical identity
+lookup and ordered hit-action application behind private `GameplayModel` methods.
+Hit effects borrow synchronous retirement/effect/reward callbacks from the current
+frame. They cannot escape it. Retirement remaps the physical identity again after
+effect allocation; a cached compact index can refer to a different record then.
+The caller's shadow preserves the hit record across allocation/retirement.
+Keep damage, bonus, effect, retirement, counts, audio, score, sort and reward/victory
+in the existing action order. The hit sort uses cached presenter distances and
+unconditional swaps; it is not the boundary's recomputed distance sort.
+
+The three private contact passes borrow boundary membership and pre-movement
+positions/order through `campaign_contact.hpp`. Player contact responds to the
+last solid overlap before projectile lifetime/movement. Player shots select the
+first eligible target after movement. Actor/hostile-shot traversal retains the
+inherited physical order, including retired fixed-pool Bomb pointers, and stops
+after the first hostile source retirement. Do not combine these selection rules.
+
+`advanceLevel2` still owns allocation callbacks, movement/presentation stages and
+their order. Pass results carry only suspension/deferred Type-48 and guardian
+contact observations into later stages. Reward/ending returns suspend the caller
+at the original point; they do not execute the rest of the frame. No pass retains
+the borrowed views or introduces another actor/pool owner.
+
+`campaign_allocation.cpp` owns the retirement/effect operations on the same model
+storage. Retirement preserves the physical record before compact-vector removal,
+uses swap-back allocation-list order, then remaps compact contacts without changing
+encoded retired fixed contacts. Non-effect removals and presenter-only effect
+retirements have different rebuild/sort consequences. Their temporary counters and
+borrowed behavior target live in one frame-local `CampaignRetirement`; no additional
+actor/pool owner is created. `campaign_reward.cpp` retains collision clearance,
+pool-full fallback, RNG and nested reward order. The dispatcher still chooses when
+to call each operation. The resource-free allocation test covers these boundaries.
+
+`campaign_ordinary_adapter.cpp` connects the typed behavior helpers to projectile
+allocation and writes live actor shadows back through their physical slots. It
+also holds the ground-riding and Type-13/48 updates used by live and retired actors.
+The Type 12 callback consumes the shared contact before advancing behavior and
+resolves its physical slot again after firing can move compact indices. Type 10
+and Type 12 name the packed behavior byte without changing its layout. The
+Type 10 callback keeps its shot and cooldown sequence in the adapter and
+retargets the offset shot through the newly occupied projectile pool slot.
+`campaign_guardian_adapter.cpp` binds inherited projectile records, contacts, RNG,
+damage, retirement and attack callbacks. Preserve the physical Level 2 emission's
+allocation-before-origin-read order: the new actor can reuse the source slot.
+The dispatcher still selects and visits actors in the same order, then processes
+deferred emissions and frame work. Adapters borrow the existing model and context.
+
+The Level 3 guardian update returns a source snapshot when its timer requests a
+Type-47 burst. The snapshot precedes animation selector writeback. The actor walk
+keeps the latest request and deploys it at the deferred emission stage. Each of
+the two launches checks capacity before consuming its initializer RNG draws.
+
+### Maintainability assessment
+
+Pool/contact operations now have private, named interfaces and reproducible fast
+contracts plus a retained campaign gate. The remaining concentration is in
+`GameplayModel::advanceLevel2` (ordered actor walk and inline behavior branches),
+`Level1State::advanceTickImpl` (older source-path update ordering), and the optional
+`diagnostic_main.cpp` command chain. These still require substantial context.
+
+Split diagnostic command groups through the existing internal command interface
+separately. Raw state-byte offsets and
+historical Level2 names remain readability debt; use private typed accessors in
+bounded steps. Width casts, source-address comments and unsupported-domain guards
+often encode recovered semantics and should not be removed as cosmetic cleanup.
+Finite regression coverage does not establish global DOS equivalence.
 
 Developer trace/replay commands are available in the optional `stellar7-tools`
 target (`STELLAR7_BUILD_DIAGNOSTICS=ON`). It is off by default and excluded from

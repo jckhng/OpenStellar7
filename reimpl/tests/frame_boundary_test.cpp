@@ -1,11 +1,16 @@
 #include "stellar7/gameplay.hpp"
 #include "stellar7/frame_controller.hpp"
 
+#include <limits>
 #include <cassert>
 #include <stdexcept>
 
 namespace stellar7 {
 struct GameplayModelTestAccess {
+    static bool collides(const Level1Entity& left, const Level1Entity& right) {
+        return GameplayModel::campaignCollides(left, right);
+    }
+
     static void configureTail(GameplayModel& model) {
         model.level2Player_.weaponCooldown = 8;
         model.level2Player_.weaponSlotTimers = {10, 12, 0};
@@ -174,6 +179,31 @@ void sameGround(const stellar7::GameplayModel& first, const stellar7::GameplayMo
 }
 
 int main() {
+    // Contact is an inclusive axis-aligned box, not a sphere. Check the corner,
+    // each boundary, excluded Type 7, disabled radii and full-width coordinates.
+    stellar7::Level1Entity left{}, right{};
+    left.type = 1; right.type = 2;
+    left.collisionRadius = 100; right.collisionRadius = 102;
+    right.position = {101, -101, 101};
+    assert(stellar7::GameplayModelTestAccess::collides(left, right));
+    for (const auto outside : {stellar7::FixedPosition{102, -101, 101},
+        stellar7::FixedPosition{101, -102, 101}, stellar7::FixedPosition{101, -101, 102}}) {
+        right.position = outside;
+        assert(!stellar7::GameplayModelTestAccess::collides(left, right));
+    }
+    right.position = {};
+    left.type = 7;
+    assert(!stellar7::GameplayModelTestAccess::collides(left, right));
+    left.type = 1; right.type = 7;
+    assert(!stellar7::GameplayModelTestAccess::collides(left, right));
+    right.type = 2; right.collisionRadius = 0x80000000U;
+    assert(!stellar7::GameplayModelTestAccess::collides(left, right));
+    right.collisionRadius = 0; left.collisionRadius = 0;
+    assert(stellar7::GameplayModelTestAccess::collides(left, right));
+    left.position.x = std::numeric_limits<std::int32_t>::min();
+    right.position.x = std::numeric_limits<std::int32_t>::max();
+    assert(!stellar7::GameplayModelTestAccess::collides(left, right));
+
     stellar7::GameplayModel prefixModel;
     prefixModel.startLevel2();
     assert(prefixModel.level2Player().weaponSlotCount == 0);

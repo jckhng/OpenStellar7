@@ -10,10 +10,18 @@ add_library(stellar7_core
     src/cockpit_state.cpp
     src/campaign_loader.cpp
     src/campaign_entity_pools.cpp
+    src/campaign_allocation.cpp
+    src/campaign_reward.cpp
     src/campaign_enemy_projectiles.cpp
     src/campaign_presentation.cpp
+    src/campaign_combat.cpp
+    src/campaign_player_contact.cpp
+    src/campaign_projectile_hits.cpp
+    src/campaign_actor_contact.cpp
     src/campaign_frame_boundary.cpp
     src/campaign_guardian.cpp
+    src/campaign_guardian_adapter.cpp
+    src/campaign_ordinary_adapter.cpp
     src/campaign_guardian_children.cpp
     src/playable_campaign_loader.cpp
     src/playable_campaign_lifecycle.cpp

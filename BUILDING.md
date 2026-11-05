@@ -65,6 +65,30 @@ ctest --test-dir build/enhanced -C Release --output-on-failure -R '^stellar7_(na
 Their generated profiles stay under the build directory. Run CTest serially
 against any one build directory; independent build directories may run in parallel.
 
+Pool retirement, compact/physical contact remapping and pending effect reuse have
+a fast resource-free contract test:
+
+```sh
+cmake --build build/enhanced --config Release --target stellar7_campaign_allocation_tests
+ctest --test-dir build/enhanced -C Release --output-on-failure -R '^stellar7_campaign_allocation_tests$'
+```
+
+The full retained Easy campaign has repository-owned inputs and expectations.
+Configure `STELLAR7_TEST_RESOURCE_DIR` with all 20 supported original RES files.
+The shared resource-test setup requires uppercase filenames for `COCKPIT.RES`,
+`STELLAR.RES`, `STELART.RES`, `LEVEL1.RES`, and `LEVEL2.RES`. The full campaign
+test accepts either case for the other filenames. Then run:
+
+```sh
+cmake --build build/enhanced --config Release --target stellar7_playable_full_campaign_tests
+ctest --test-dir build/enhanced -C Release --output-on-failure -R '^stellar7_playable_full_campaign_tests$'
+```
+
+No harness, private replay directory or player save is needed. The test uses an
+empty in-memory profile and checks startup, seven levels, two Continues, ending,
+Hall/title and a new Begin with adjacent frames. Allow several minutes; run it
+at integration milestones. See [coverage and limits](docs/TESTING.md#recorded-engine-coverage).
+
 CPack creates assets-free runtime archives. It does not publish them. Do not add
 your `datafile/`, profiles, private test evidence or original captures to archives.
 Windows enhanced builds also create `Play-gamepad.cmd` beside the build executable.

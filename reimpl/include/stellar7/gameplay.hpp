@@ -612,6 +612,29 @@ private:
     void prepareFirstLevel2SourceFrame(const GameplayInput& input, Level2FrameRenderer* renderer);
     void qualifyLevel2SourcePrefix(const GameplayInput& input, Level2FrameRenderer* renderer);
     void advanceLevel2SourcePrefix(const GameplayInput& input, Level2FrameRenderer& renderer);
+    static bool campaignCollides(const Level1Entity& left, const Level1Entity& right) noexcept;
+    std::size_t campaignEntityIdentity(std::size_t index) const;
+    std::size_t campaignEntityIndex(std::size_t identity) const;
+    // Synchronous effects borrow frame-local allocation/contact owners. Never retain them.
+    struct CampaignCombatCallbacks {
+        std::function<void(std::size_t)> retire;
+        std::function<bool(const Level1Entity&, std::uint8_t, std::uint8_t)> effect;
+        std::function<void(const Level1Entity&, CampaignExit)> reward;
+    };
+    bool applyCampaignHit(Level1Entity& shadow, std::uint8_t amount, std::size_t identity,
+        const CampaignCombatCallbacks& callbacks, std::optional<FixedPosition> effectPosition = {});
+    enum class CampaignContactFlow { continueFrame, suspendFrame };
+    struct CampaignContactStart;
+    struct CampaignContactMotion;
+    struct CampaignPlayerContactResult;
+    struct CampaignProjectileContactResult;
+    bool campaignActorExistedAtStart(std::size_t entityIndex, const CampaignContactStart& start) const noexcept;
+    CampaignPlayerContactResult resolveCampaignPlayerContact(const CampaignContactStart& start,
+        Level2Continuation continuation, Level2FrameRenderer* renderer, const CampaignCombatCallbacks& combat);
+    CampaignProjectileContactResult resolveCampaignPlayerProjectileHits(const CampaignContactStart& start,
+        const CampaignContactMotion& motion, const CampaignCombatCallbacks& combat);
+    CampaignContactFlow resolveCampaignActorContacts(const CampaignContactStart& start,
+        const CampaignContactMotion& motion, const CampaignCombatCallbacks& combat);
     void expireLevel2EffectPresentation();
     void sortLevel2ActiveByDistance();
     struct Level2EntityIdentity {
@@ -619,6 +642,31 @@ private:
         std::size_t slot;
         std::size_t activePosition;
     };
+    struct CampaignRetirement;
+    enum class CampaignRewardDomain { shared, physicalLevel2Guardian };
+    void retireCampaignEntity(std::size_t removed, CampaignRetirement& retirement) noexcept;
+    bool spawnCampaignTransientEffect(const Level1Entity& source,
+        std::uint8_t firstFrame, std::uint8_t terminalFrame) noexcept;
+    void deployCampaignReward(const Level1Entity& source, CampaignExit exit,
+        const std::vector<Level2EntityIdentity>& identities, CampaignRewardDomain domain);
+    static void applyCampaignGroundRidingVelocity(Level1Entity& entity, const Level1Entity& behaviorTarget) noexcept;
+    void advanceCampaignType48(Level1Entity& entity) noexcept;
+    static constexpr std::size_t ordinaryBehaviorStateByte = 5;
+    static std::int32_t arithmeticShiftRightFour(std::int32_t value);
+    void advanceCampaignType10(std::size_t index);
+    void advanceCampaignType12(std::size_t index);
+    void advanceCampaignType13(Level1Entity& entity, const Level1Entity& behaviorTarget);
+    void advanceCampaignOrdinaryWithFire(Level1Entity& actor, std::size_t ownerSlot, const Level1Entity& behaviorTarget);
+    void advanceLiveCampaignOrdinary(std::size_t index, const Level1Entity& behaviorTarget);
+    void advanceCampaignType6(std::size_t index);
+    void advanceCampaignType9(std::size_t index);
+    void advancePhysicalLevel2Guardian(std::size_t slot, const Level1Entity& behaviorTarget,
+        const CampaignProjectileContactResult& projectileContact, bool& guardianAllocatedThisBoundary);
+    void advanceLevel5Guardian(Level1Entity& actor, std::size_t ownerSlot);
+    std::optional<Level1Entity> advanceLevel3Guardian(Level1Entity& entity);
+    void deployLevel3GuardianBurst(const Level1Entity& source);
+    void advanceCampaignGuardian(Level1Entity& actor, std::size_t ownerSlot,
+        const std::vector<Level2EntityIdentity>& identities, const CampaignCombatCallbacks& combat);
     std::size_t level2FixedPoolSlot(std::size_t entityIndex) const noexcept;
     std::vector<Level2EntityIdentity> captureLevel2ActiveIdentities(const std::vector<std::size_t>& order) const;
     std::vector<std::size_t> remapLevel2BoundaryOrder(const std::vector<Level2EntityIdentity>& identities) const;
@@ -823,6 +871,9 @@ private:
         level2ProjectilePoolWasActiveAtBoundaryStart_{};
     std::vector<std::size_t> level2EntityProjectilePoolSlots_;
     static constexpr std::size_t level2DeathEffectPoolSize_ = 8;
+    // Encoded retired FE contacts are disjoint from every compact live index.
+    static constexpr auto retiredFixedContactBase_ = level2ActorPoolSize_ + level2FixedObjectPoolSize_
+        + level2ProjectilePoolSize_ + level2DeathEffectPoolSize_;
     std::array<Level1Entity, level2DeathEffectPoolSize_>
         level2DeathEffectPool_{};
     std::array<bool, level2DeathEffectPoolSize_>

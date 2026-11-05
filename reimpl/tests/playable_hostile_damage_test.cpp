@@ -10,6 +10,7 @@ void require(bool value,const char* message) {if(!value) {throw std::runtime_err
 }
 namespace stellar7 {
 enum class HostileContactCase { hit,shielded,miss };
+enum class ContactOrder { allocation, reversed };
 struct Level1ReloadTestAccess {
     static void shield(Level1State& state,bool enabled) {
         state.systemTimers_[1]=enabled?500:0;state.systemStatusLevels_[1]=enabled?-2:3;
@@ -69,6 +70,78 @@ struct GameplayModelTestAccess {
         Level1ReloadTestAccess::shield(model.level1_,mode==HostileContactCase::shielded);
         const int damage=shot->type==19?80:shot->type==18?64:shot->type==20?56:shot->type==22?104:40;
         return {slot,damage};
+    }
+    // Declared synthetic overlap on two genuinely allocated FD records. Keep
+    // their distinct types/damage so traversal order is observable across frames.
+    static std::array<std::size_t, 2> pairedShots(GameplayModel& model, const ContactOrder order) {
+        std::array<std::size_t, 2> slots{};
+        for (auto& slot : slots) {
+            const auto owner = std::find_if(model.level2Entities_.begin(), model.level2Entities_.end(),
+                [](const auto& actor) { return actor.stateBytes4dTo52[0] == 0xff && actor.weaponSlotCount > 0; });
+            require(owner != model.level2Entities_.end(), "paired contact has no armed owner");
+            const auto free = std::find(model.level2ProjectilePoolActive_.begin(), model.level2ProjectilePoolActive_.end(), false);
+            require(free != model.level2ProjectilePoolActive_.end(), "paired contact has no free FD record");
+            slot = static_cast<std::size_t>(free - model.level2ProjectilePoolActive_.begin());
+            owner->weaponCooldown = 0;
+            owner->weaponSlotTimers.fill(0);
+            owner->targetHeading = owner->yaw;
+            require(model.fireLevel2EnemyProjectile(static_cast<std::size_t>(owner - model.level2Entities_.begin())),
+                "paired contact allocation failed");
+        }
+        isolateActors(model);
+        for (std::size_t index = 0; index < slots.size(); ++index) {
+            const auto found = std::find(model.level2EntityProjectilePoolSlots_.begin(),
+                model.level2EntityProjectilePoolSlots_.end(), slots[index]);
+            auto& shot = model.level2Entities_[static_cast<std::size_t>(found - model.level2EntityProjectilePoolSlots_.begin())];
+            shot.type = index == 0 ? 17 : 19;
+            shot.position = model.level2Player_.position;
+            shot.stateBytes4dTo52[1] = 10;
+            model.level2ProjectilePool_[slots[index]] = shot;
+        }
+        if (order == ContactOrder::reversed) {
+            const auto first = std::find(model.level2EntityProjectilePoolSlots_.begin(), model.level2EntityProjectilePoolSlots_.end(), slots[0]);
+            const auto second = std::find(model.level2EntityProjectilePoolSlots_.begin(), model.level2EntityProjectilePoolSlots_.end(), slots[1]);
+            const auto firstIndex = static_cast<std::size_t>(first - model.level2EntityProjectilePoolSlots_.begin());
+            const auto secondIndex = static_cast<std::size_t>(second - model.level2EntityProjectilePoolSlots_.begin());
+            for (auto* list : {&model.level2ActiveListOrder_, &model.level2AllocationListOrder_, &model.level2ObjectListOrder_}) {
+                std::iter_swap(std::find(list->begin(), list->end(), firstIndex), std::find(list->begin(), list->end(), secondIndex));
+            }
+            std::swap(slots[0], slots[1]);
+        }
+        Level1ReloadTestAccess::shield(model.level1_, false);
+        return slots;
+    }
+    static bool projectileActive(const GameplayModel& model, const std::size_t slot) {
+        return model.level2ProjectilePoolActive_[slot];
+    }
+    static std::unique_ptr<GameplayModel> pairedSolids(const GameplayAssets& assets, const ContactOrder order) {
+        const auto count = level1RewardModelCapacity(assets);
+        const std::vector<Model3d> shared(assets.models.begin(), assets.models.begin() + count);
+        auto table = campaignLevelDefinition(1, 0).table;
+        table.actors = {{1, 0, 0, 0}, {4, 0, 0, 0}};
+        StellarRng rng;
+        auto actors = constructCampaignLoaderActors(table, rng, shared, assets.campaignLevels.at(1).models);
+        // Equal controlled bounds isolate last-contact selection from model radii.
+        constexpr std::uint32_t contactRadius = 200;
+        for (auto& actor : actors) {
+            actor.forwardVelocity = actor.xVelocity = actor.yVelocity = actor.zVelocity = actor.yawVelocity = 0;
+            actor.weaponSlotCount = 0;
+            actor.collisionRadius = contactRadius;
+        }
+        auto model = std::make_unique<GameplayModel>();
+        model->playableCampaignFrames_ = true;
+        model->initializeRetainedCampaignLevel(1, std::move(actors), rng, shared, assets.campaignLevels.at(1).models);
+        model->completePlayableCampaignPreloop();
+        model->level2Player_.collisionRadius = contactRadius;
+        model->level2PlayerArmor_ = 680;
+        model->level2ActiveListOrder_ = model->level2AllocationListOrder_;
+        if (order == ContactOrder::reversed) {
+            for (auto* list : {&model->level2ActiveListOrder_, &model->level2AllocationListOrder_, &model->level2ObjectListOrder_}) {
+                std::reverse(list->begin(), list->end());
+            }
+        }
+        Level1ReloadTestAccess::shield(model->level1_, false);
+        return model;
     }
     static bool controlledShotRetired(const GameplayModel& model,std::size_t slot) {
         // A later callback may reuse the retired FD slot in this same frame.
@@ -137,6 +210,29 @@ int main(int argc,char** argv) {
                 model->advancePlayableCampaign({});model->finishPlayableCampaignFrame();
                 require(model->playerArmor()==expected,"retired hostile hit twice on adjacent frame");
             }
+        }
+        for (const auto order : {ContactOrder::allocation, ContactOrder::reversed}) {
+            auto model = GameplayModelTestAccess::commonLoader(assets, 1);
+            const auto slots = GameplayModelTestAccess::pairedShots(*model, order);
+            const auto armor = model->playerArmor();
+            const auto firstDamage = order == ContactOrder::allocation ? 40 : 80;
+            model->advancePlayableCampaign({});
+            model->finishPlayableCampaignFrame();
+            require(model->playerArmor() == armor - firstDamage, "hostile traversal did not stop at its first contact");
+            require(!GameplayModelTestAccess::projectileActive(*model, slots[0])
+                && GameplayModelTestAccess::projectileActive(*model, slots[1]), "hostile traversal retired the wrong physical record");
+            require(std::count_if(model->level2AudioEvents().begin(), model->level2AudioEvents().end(),
+                [](const auto& event) { return event.eventId == 6; }) == 1, "first hostile contact changed impact count");
+            model->advancePlayableCampaign({});
+            model->finishPlayableCampaignFrame();
+            require(model->playerArmor() == armor - 120 && !GameplayModelTestAccess::projectileActive(*model, slots[1]),
+                "adjacent hostile traversal lost its remaining contact");
+
+            auto solids = GameplayModelTestAccess::pairedSolids(assets, order);
+            solids->advancePlayableCampaign({});
+            solids->finishPlayableCampaignFrame();
+            require(solids->playerArmor() == (order == ContactOrder::allocation ? 580 : 680),
+                "player traversal did not respond to its last solid contact");
         }
         require(!campaignStoryScene(2),"Level2 to3 incorrectly schedules narration");
         {

@@ -107,14 +107,23 @@ GameplayInput a50eWindowControls(const GameplayModel& model, const Level1Entity&
 GameplayInput controls(const GameplayModel& model, const RouteGoal goal) {
     const auto reward = find(model, 25, 25);
     if (reward != noObject) {
+        if (goal == RouteGoal::progression) {
+            // Surviving minions can intercept the player on the way to the reward.
+            const auto minion = find(model, 47, 47);
+            if (minion != noObject) {
+                return test::campaignPilotControls(model, model.level2Entities()[minion], test::CampaignPilotGoal::combat);
+            }
+        }
         return test::campaignPilotControls(model, model.level2Entities()[reward], test::CampaignPilotGoal::collect);
     }
     const auto guardian = find(model, 44, 44);
     if (guardian != noObject) {
-        if (goal == RouteGoal::progression) {
-            return a50eWindowControls(model, model.level2Entities()[guardian]);
+        auto input = a50eWindowControls(model, model.level2Entities()[guardian]);
+        if (goal == RouteGoal::combatRetry) {
+            // Keep the guardian alive until it emits a minion.
+            input.fire = false;
         }
-        return test::campaignPilotControls(model, model.level2Entities()[guardian], test::CampaignPilotGoal::combat);
+        return input;
     }
     const Level1Entity* nearest = nullptr;
     auto distance = std::uint32_t{0xffffffffU};
@@ -206,7 +215,10 @@ void route(const std::filesystem::path& root, const RouteGoal goal) {
     constexpr unsigned maximumFrames = 20000;
     for (unsigned frame = 0; frame < maximumFrames; ++frame) {
         try {
-            model->advancePlayableCampaign(controls(*model, goal));
+            // Once the emission is observed, release the controls and let live combat cause the death.
+            const auto input = goal == RouteGoal::combatRetry && emission
+                ? GameplayInput{} : controls(*model, goal);
+            model->advancePlayableCampaign(input);
             arrival = arrival || find(*model, 7, 7) != noObject;
             deployed = deployed || find(*model, 44, 44) != noObject;
             emission = emission || find(*model, 47, 47) != noObject;

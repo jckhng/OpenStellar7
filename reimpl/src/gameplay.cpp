@@ -2,7 +2,8 @@
 #include "stellar7/gameplay.hpp"
 #include "gameplay_render_support.hpp"
 #include "heap_animation.hpp"
-#include "campaign_pool_identity.hpp"
+#include "campaign_contact.hpp"
+#include "campaign_allocation.hpp"
 #include "playable_jump.hpp"
 #include "playable_decoy.hpp"
 #include "playable_bomb.hpp"
@@ -18,9 +19,6 @@
 #include "stellar7/palette_clock.hpp"
 #include "stellar7/indexed_render.hpp"
 #include "ordinary_behavior.hpp"
-#include "level5_guardian.hpp"
-#include "hazard_contact.hpp"
-#include "campaign_guardian_children.hpp"
 
 #include <algorithm>
 #include <array>
@@ -132,13 +130,6 @@ std::int16_t arithmeticShiftRightOne(const std::int16_t value) {
         return static_cast<std::int16_t>(value / 2);
     }
     return static_cast<std::int16_t>(-((-value + 1) / 2));
-}
-
-std::int32_t arithmeticShiftRightFour(const std::int32_t value) {
-    if (value >= 0) {
-        return value / 16;
-    }
-    return -((-value + 15) / 16);
 }
 
 std::uint16_t absoluteSignedWord(const std::uint16_t value) {
@@ -2431,8 +2422,6 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
     const bool physicalLevel2Guardian = playableCampaignFrames_ && activeCampaignLevel_ == 1
         && campaignModelsBound_ && playableOrdinaryConstructor_.has_value();
     retainPhysicalPostWaveRole();
-    constexpr std::uint8_t projectilePoolKind = 0xfd;
-    constexpr std::uint8_t skipSourceContactMode = 3;
     if (phase_ == GameplayPhase::level2PreloopReturn) {
         prepareFirstLevel2SourceFrame(input, renderer);
         return;
@@ -2478,13 +2467,10 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         }
     }
     const auto level2ActorActiveAtStart = level2ActorPoolActive_;
-    const auto actorExistedAtStart = [
-        this,
-        &level2ActorActiveAtStart
-    ](const std::size_t entityIndex) noexcept {
-        const auto actorSlot = level2EntityActorPoolSlots_[entityIndex];
-        return actorSlot >= level2ActorPoolSize_
-            || level2ActorActiveAtStart[actorSlot];
+    const CampaignContactStart contactStart{level2ActiveIdentitiesAtStart, level2ActorActiveAtStart,
+        level2ProjectileActiveAtStart, retainedLevel3, campaignGuardians};
+    const auto actorExistedAtStart = [this, &contactStart](const std::size_t entityIndex) noexcept {
+        return campaignActorExistedAtStart(entityIndex, contactStart);
     };
     bool level2PlayerProjectileAllocated = false;
     if (level2HasAdvanced_ && !tailConsumed && !resuming) {
@@ -2516,178 +2502,9 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
     if (renderer == nullptr && !resuming) {
         advanceCockpitIndicator();
     }
-    const auto level2Collides = [](
-        const Level1Entity& left,
-        const Level1Entity& right
-    ) noexcept {
-        if (left.type == 7 || right.type == 7) {
-            return false;
-        }
-        if (
-            static_cast<std::int32_t>(left.collisionRadius) < 0
-            || static_cast<std::int32_t>(right.collisionRadius) < 0
-        ) {
-            return false;
-        }
-        const auto threshold = static_cast<std::int64_t>(
-            (left.collisionRadius + right.collisionRadius) >> 1U
-        );
-        const auto magnitude = [](const std::int64_t value) noexcept {
-            return value < 0 ? -value : value;
-        };
-        return (
-            magnitude(
-                static_cast<std::int64_t>(left.position.x)
-                - right.position.x
-            ) <= threshold
-            && magnitude(
-                static_cast<std::int64_t>(left.position.y)
-                - right.position.y
-            ) <= threshold
-            && magnitude(
-                static_cast<std::int64_t>(left.position.z)
-                - right.position.z
-            ) <= threshold
-        );
-    };
-    //Logical indices occupy at most all four live pools. Keep source+5F's
-    //retired FE pointer in the same field without allocating another owner.
-    constexpr auto fixedContactBase=level2ActorPoolSize_+level2FixedObjectPoolSize_
-        +level2ProjectilePoolSize_+level2DeathEffectPoolSize_;
-    auto removedLevel2Entity = static_cast<std::size_t>(-1);
-    auto retiredDeathEffectCount = std::size_t{0};
-    const auto removeLevel2Entity = [
-        this,
-        &removedLevel2Entity,
-        &retiredDeathEffectCount,
-        &behaviorTarget,
-        fixedContactBase,
-        resuming
-    ](const std::size_t removed) noexcept {
-        level2PrefixGuards_.reset();
-        const auto projectileSlot =
-            level2EntityProjectilePoolSlots_[removed];
-        const auto actorSlot = level2EntityActorPoolSlots_[removed];
-        const auto deathEffectSlot =
-            level2EntityDeathEffectPoolSlots_[removed];
-        if (actorSlot >= level2ActorPoolSize_ && projectileSlot >= level2ProjectilePoolSize_
-            && deathEffectSlot >= level2DeathEffectPoolSize_) {
-            ++level2FixedAllocationRevision_;
-            const auto fixedSlot = removed < level2EntityFixedPoolSlots_.size()
-                ? level2EntityFixedPoolSlots_[removed] : level2FixedObjectPoolSize_;
-            if (fixedSlot < level2FixedObjectPoolSize_) {
-                level2FixedPool_[fixedSlot] = level2Entities_[removed];
-                level2FixedPoolKnown_[fixedSlot] = true;
-            }
-        }
-        if (projectileSlot < level2ProjectilePoolSize_) {
-            auto retiredProjectile = level2Entities_[removed];
-            // FUN_1000:9298 refreshes the presenter fields before invoking
-            // the projectile callback that retires this record.  The freed
-            // slot therefore carries current distance/heading into reuse.
-            if (!resuming) {
-                retiredProjectile.presenterDistance = approximatePlanarDistance(
-                    behaviorTarget.position,
-                    retiredProjectile.position
-                );
-                retiredProjectile.targetHeading = presenterTargetHeading(
-                    retiredProjectile.position,
-                    behaviorTarget.position
-                );
-            }
-            retiredProjectile.stateBytes4dTo52[1] = 0;
-            level2ProjectilePool_[projectileSlot] = retiredProjectile;
-            level2ProjectilePoolActive_[projectileSlot] = false;
-        }
-        if (actorSlot < level2ActorPoolSize_) {
-            level2ActorPool_[actorSlot] = level2Entities_[removed];
-            level2ActorPoolActive_[actorSlot] = false;
-        }
-        if (deathEffectSlot < level2DeathEffectPoolSize_) {
-            level2DeathEffectPool_[deathEffectSlot] =
-                level2Entities_[removed];
-            level2DeathEffectPoolActive_[deathEffectSlot] = false;
-        }
-        if (deathEffectSlot >= level2DeathEffectPoolSize_) {
-            level2RetiredEffectSemanticOrderRebuilt_ = false;
-            // Expired effects remain in the semantic presenter snapshot.
-            // Removing one from the live vector must not collapse another
-            // retired effect's identity (native Level 2 loop 786 retires two).
-            // Other removals really do leave that snapshot and shift it.
-            for (auto& retired : level2RetiredEffectSemanticEntities_) {
-                if (retired.allocationIndex > removed) {
-                    --retired.allocationIndex;
-                }
-            }
-        }
-        const auto allocation = std::find(
-            level2AllocationListOrder_.begin(),
-            level2AllocationListOrder_.end(),
-            removed
-        );
-        if (allocation != level2AllocationListOrder_.end()) {
-            *allocation = level2AllocationListOrder_.back();
-            level2AllocationListOrder_.pop_back();
-        }
-        if (playableCampaignFrames_) {
-            //Portable indices move when an earlier physical record retires.
-            //DS1292 retains its dead physical guardian; its erased compact view
-            //must not become a reference to the actor shifted into that index.
-            if (level2PostWaveObjectIndex_ == removed) {
-                level2PostWaveObjectIndex_ = retiredGuardianIndex;
-            }
-            for (auto* pointer:{&level2CompletionObjectIndex_,&level2PostWaveObjectIndex_,&level2PickupIndex_}) {
-                if (*pointer>removed && *pointer<postWaveActorKeyBase_) {--*pointer;}
-            }
-        }
-        level2Entities_.erase(
-            level2Entities_.begin()
-                + static_cast<std::ptrdiff_t>(removed)
-        );
-        level2EntityFixedPoolSlots_.resize(level2Entities_.size() + 1, level2FixedObjectPoolSize_);
-        level2EntityFixedPoolSlots_.erase(level2EntityFixedPoolSlots_.begin() + removed);
-        level2EntityProjectilePoolSlots_.erase(
-            level2EntityProjectilePoolSlots_.begin()
-                + static_cast<std::ptrdiff_t>(removed)
-        );
-        level2EntityActorPoolSlots_.erase(
-            level2EntityActorPoolSlots_.begin()
-                + static_cast<std::ptrdiff_t>(removed)
-        );
-        level2EntityDeathEffectPoolSlots_.erase(
-            level2EntityDeathEffectPoolSlots_.begin()
-                + static_cast<std::ptrdiff_t>(removed)
-        );
-        for (auto& index : level2AllocationListOrder_) {
-            if (index > removed) {
-                --index;
-            }
-        }
-        level2ObjectListOrder_ = level2AllocationListOrder_;
-        level2ActiveListOrder_ = level2AllocationListOrder_;
-        for (auto& entity : level2Entities_) {
-            if (entity.allocationIndex > removed) {
-                --entity.allocationIndex;
-            }
-            if (entity.collisionContactAllocationIndex == removed) {
-                entity.collisionContactAllocationIndex =
-                    static_cast<std::size_t>(-1);
-            } else if (
-                entity.collisionContactAllocationIndex > removed
-                && entity.collisionContactAllocationIndex < fixedContactBase
-            ) {
-                --entity.collisionContactAllocationIndex;
-            }
-        }
-        if (deathEffectSlot >= level2DeathEffectPoolSize_) {
-            // A terminal effect is retired by its presenter before the
-            // ordinary pointer walk and does not suppress FUN_1000:14b0's
-            // distance sort. Actor/projectile membership changes still
-            // force the allocation-list rebuild path.
-            removedLevel2Entity = removed;
-        } else {
-            ++retiredDeathEffectCount;
-        }
+    CampaignRetirement retirement{behaviorTarget, continuation};
+    const auto removeLevel2Entity = [this, &retirement](const std::size_t removed) noexcept {
+        retireCampaignEntity(removed, retirement);
     };
     if (playableCampaignFrames_ && !resuming && fuelBay_.fixedSlot) {
         level2ArmorWarningActive_=false; //0EF8 clears source129C before either branch.
@@ -2716,551 +2533,20 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             level2FixedPool_[slot] = station;
         }
     }
-    auto playerContactType48ActorSlot = level2ActorPoolSize_;
 
-    // FUN_1000:0784 integrates the player first. FUN_1000:0c0a then marks
-    // every qualifying contact and returns the last one for the shared
-    // translation-only backout. Transient effects and projectile actors are
-    // not solid targets for this pass.
-    const auto spawnLevel2TransientEffect = [
-        this
-    ](
-        const Level1Entity& source,
-        const std::uint8_t firstFrame,
-        const std::uint8_t terminalFrame
-    ) noexcept {
-        const auto effectSlot = std::find_if(
-            level2DeathEffectPoolActive_.begin(),
-            level2DeathEffectPoolActive_.end(),
-            [this](const bool& active) {
-                const auto slot = static_cast<std::size_t>(
-                    &active - level2DeathEffectPoolActive_.data()
-                );
-                return !active
-                    && !level2DeathEffectPoolPendingPresenterRetirement_[slot];
-            }
-        );
-        if (effectSlot == level2DeathEffectPoolActive_.end()) {
-            return false;
-        }
-        level2PrefixGuards_.reset();
-        const auto poolIndex = static_cast<std::size_t>(
-            effectSlot - level2DeathEffectPoolActive_.begin()
-        );
-        auto effect = level2DeathEffectPool_[poolIndex];
-        level2DeathEffectPoolPendingPresenterRetirement_[poolIndex] = false;
-        effect.flags = 0x8c;
-        effect.type = -1;
-        effect.renderProfile = WorldActorRenderProfile::bitmapEffectCallback;
-        effect.collisionRadius = 0;
-        effect.position = source.position;
-        effect.stateBytes4dTo52 = {
-            252,
-            firstFrame,
-            0,
-            0,
-            terminalFrame,
-            0,
-        };
-        effect.weaponSlotCount = 0;
-        effect.weaponCooldown = 0;
-        effect.weaponSlotTimers = {};
-        const auto insertionIndex = level2Entities_.size();
-        effect.allocationIndex = insertionIndex;
-        ++level2AllocationRevision_;
-        level2RetiredEffectSemanticOrderRebuilt_ = false;
-        ++level2NonProjectileAllocationRevision_;
-        level2Entities_.push_back(effect);
-        level2EntityFixedPoolSlots_.resize(insertionIndex, level2FixedObjectPoolSize_);
-        level2EntityFixedPoolSlots_.push_back(level2FixedObjectPoolSize_);
-        level2EntityActorPoolSlots_.push_back(level2ActorPoolSize_);
-        level2EntityProjectilePoolSlots_.push_back(
-            level2ProjectilePoolSize_
-        );
-        level2EntityDeathEffectPoolSlots_.push_back(poolIndex);
-        level2DeathEffectPoolActive_[poolIndex] = true;
-        level2AllocationListOrder_.push_back(insertionIndex);
-        level2ObjectListOrder_ = level2AllocationListOrder_;
-        level2ActiveListOrder_ = level2AllocationListOrder_;
-        return true;
+    const auto spawnLevel2TransientEffect = [this](const Level1Entity& source,
+        const std::uint8_t firstFrame, const std::uint8_t terminalFrame) noexcept {
+        return spawnCampaignTransientEffect(source, firstFrame, terminalFrame);
     };
-    auto retiredType48ActorSlot = level2ActorPoolSize_;
-    std::array<bool, level2ActorPoolSize_>
-        level2GuardianRetiredContact{};
-    const auto deployGuardianReward = [this, &level2ActiveIdentitiesAtStart, &level2Collides, physicalLevel2Guardian](
-        const Level1Entity& pendingEffectSource, const CampaignExit exit) {
-        const auto retainedReward = activeCampaignLevel_ == 4 || (playableCampaignFrames_
-            && (activeCampaignLevel_ == 0 || activeCampaignLevel_ == 3 || activeCampaignLevel_ == 5 || activeCampaignLevel_ == 6));
-        if ((exit == CampaignExit::blueWarp && !level2SecondaryPickupKnownNull_)
-            || (exit == CampaignExit::greenReward && retainedReward
-                && level2PickupIndex_ != static_cast<std::size_t>(-1))) {
-            return;
-        }
-
-            const auto choice = level2Rng_.next();
-            Level1Entity pickup{};
-            pickup.type = static_cast<std::int16_t>(exit);
-            // LEVEL3.RES has no model-radius record for the shared Type-25
-            // completion object.  Native FUN_1000:45c6 therefore leaves its
-            // collision radius at zero on the Level 3 allocation path.  The
-            // Level 2 resource supplies the ordinary 897-radius pickup.
-            pickup.collisionRadius = playableCampaignFrames_ && campaignModelsBound_ ? campaignModels_[pickup.type].radius
-                : activeCampaignLevel_ == 2 ? 0 : 897;
-            pickup.position = pendingEffectSource.position;
-            pickup.position.z = 0;
-            pickup.yaw = static_cast<std::uint16_t>(
-                pendingEffectSource.targetHeading - 0x8000U
-            );
-            pickup.forwardVelocity = 100;
-            pickup.stateBytes4dTo52 = {254, 100, 2, 0, 0, 1};
-            if (playableCampaignFrames_) {
-                pickup.renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
-                pickup.animatedModelPresenterEnabled = false;
-            }
-            auto pickupIndex = allocateLevel2FixedObject(pickup);
-            const auto allocatedPickup =
-                pickupIndex != static_cast<std::size_t>(-1);
-            if (pickupIndex == static_cast<std::size_t>(-1)) {
-                // FUN_1000:45c6 falls back to the first active record whose
-                // type exceeds 44 when the 16-record fixed pool is full.
-                // Route-v13 tick 10231 recycles a Type 46 this way.
-                for (const auto candidate : level2AllocationListOrder_) {
-                    if (
-                        candidate < level2Entities_.size()
-                        && level2Entities_[candidate].type > 44
-                    ) {
-                        pickupIndex = candidate;
-                        pickup.collisionRadius =
-                            level2Entities_[candidate].collisionRadius;
-                        pickup.allocationIndex = candidate;
-                        level2Entities_[candidate] = pickup;
-                        break;
-                    }
-                }
-            }
-            if (pickupIndex < level2Entities_.size()) {
-                auto& placedPickup = level2Entities_[pickupIndex];
-                if (retainedReward) {
-                    //45C6 overlays4506's retained fields and attaches its inline selector.
-                    placedPickup.position = pickup.position;
-                    placedPickup.pitch = placedPickup.roll = 0;
-                    placedPickup.yaw = pickup.yaw;
-                    placedPickup.pitchVelocity = placedPickup.rollVelocity = placedPickup.yawVelocity = 0;
-                    placedPickup.forwardVelocity = 100;
-                    placedPickup.stateBytes4dTo52[2] = 2;
-                    placedPickup.stateBytes4dTo52[5] = 1;
-                    placedPickup.renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
-                }
-                // FUN_1000:45c6 clears the new pickup against the destroyed
-                // guardian record still carried by the callback, not against
-                // the impacting projectile.  The accepted Level 3 loop-774
-                // collision makes the distinction observable: the native
-                // zero-radius pickup advances sixteen times beyond the
-                // Type-44 half-radius before stopping at (5904,5583).
-                const auto rewardCollision = [&]() {
-                    if (!retainedReward) {
-                        return level2Collides(placedPickup, pendingEffectSource);
-                    }
-                    auto collided = false;
-                    for (const auto identity : level2ActiveIdentitiesAtStart) {
-                        if (identity.pool != 0 && identity.pool != 3) {
-                            continue;
-                        }
-                        auto& slots = identity.pool == 0 ? level2EntityActorPoolSlots_ : level2EntityFixedPoolSlots_;
-                        const auto live = std::find(slots.begin(), slots.end(), identity.slot);
-                        auto& candidate = live != slots.end()
-                            ? level2Entities_[static_cast<std::size_t>(live - slots.begin())]
-                            : identity.pool == 0 ? level2ActorPool_[identity.slot] : level2FixedPool_[identity.slot];
-                        if (&candidate == &placedPickup || candidate.type == 7
-                            || candidate.stateBytes4dTo52[0] == 0xfd || candidate.stateBytes4dTo52[0] == 0xfc) {
-                            continue;
-                        }
-                        const auto supportedDelta = [this](const std::int64_t delta) {
-                            constexpr std::int64_t coordinateLimit = 1000000;
-                            //3A1C's -32768 saturation and wrapped arithmetic are separate domains.
-                            return (playableCampaignFrames_ || (delta != -32768 && delta != 32768))
-                                && delta >= -coordinateLimit && delta <= coordinateLimit;
-                        };
-                        if (candidate.collisionRadius >= 32768 || placedPickup.collisionRadius >= 32768
-                            || !supportedDelta(static_cast<std::int64_t>(candidate.position.x) - placedPickup.position.x)
-                            || !supportedDelta(static_cast<std::int64_t>(candidate.position.y) - placedPickup.position.y)
-                            || !supportedDelta(static_cast<std::int64_t>(candidate.position.z) - placedPickup.position.z)) {
-                            throw std::invalid_argument("Level5 reward collision arithmetic outside qualified domain");
-                        }
-                        if (level2Collides(candidate, placedPickup)) {
-                            candidate.collisionContactAllocationIndex = pickupIndex;
-                            candidate.collisionContactIsPlayer = false;
-                            collided = true;
-                        }
-                    }
-                    return collided;
-                };
-                while (rewardCollision()) {
-                    advanceEntityKinematics(placedPickup);
-                }
-                placedPickup.forwardVelocity = 0;
-                placedPickup.yawVelocity = static_cast<std::int16_t>(
-                    (
-                        static_cast<std::int16_t>(
-                            (choice >> 8U) & 0x03U
-                        ) + 10
-                    ) << 8
-                );
-                if ((choice & 0x0100U) != 0) {
-                    placedPickup.yawVelocity = static_cast<std::int16_t>(
-                        -placedPickup.yawVelocity
-                    );
-                }
-                if (allocatedPickup) {
-                    if (activeCampaignLevel_ == 1 && placedPickup.renderProfile == WorldActorRenderProfile::noHandles) {
-                        placedPickup.renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
-                    }
-                    // FUN_1000:45c6 initializes the display selector, but
-                    // the new fixed-pool pointer was absent from the
-                    // boundary's presenter walk. Natural Level 3 loop 3292
-                    // therefore retains zero distance and target heading.
-                    if (!retainedReward) {
-                        placedPickup.stateBytes4dTo52[2] = 3;
-                    }
-                } else {
-                    // A recycled record was already present in the callback
-                    // order and has current presenter fields on this tick.
-                    placedPickup.presenterDistance =
-                        approximatePlanarDistance(
-                            level2Player_.position,
-                            placedPickup.position
-                        );
-                    placedPickup.targetHeading = presenterTargetHeading(
-                        placedPickup.position,
-                        level2Player_.position
-                    );
-                }
-                if (retainedReward) {
-                    level2FixedPool_[level2EntityFixedPoolSlots_[pickupIndex]] = placedPickup;
-                }
-            }
-            if (exit == CampaignExit::greenReward) {
-                level2PickupIndex_ = pickupIndex;
-            }
-            if (!retainedReward && !physicalLevel2Guardian) {
-                if (!playableCampaignFrames_) {
-                    level2PostWaveObjectIndex_ = static_cast<std::size_t>(-1);
-                }
-                const auto choice = level2Rng_.next();
-                const auto behavior = pendingEffectSource.stateBytes4dTo52[5];
-                const bool allocation = (behavior == 0 && (choice & 0x003fU) == 0
-                        && level2CompletionObjectIndex_ == static_cast<std::size_t>(-1))
-                    || (behavior == 1 && pendingEffectSource.behaviorTimer == 21);
-                if (activeCampaignLevel_ == 1 && allocation && pickupIndex < level2Entities_.size()) {
-                    level2Entities_[pickupIndex].renderProfile = WorldActorRenderProfile::unknown;
-                }
-            }
+    const auto rewardDomain = physicalLevel2Guardian ? CampaignRewardDomain::physicalLevel2Guardian : CampaignRewardDomain::shared;
+    const auto deployGuardianReward = [this, &level2ActiveIdentitiesAtStart, rewardDomain](
+        const Level1Entity& source, const CampaignExit exit) {
+        deployCampaignReward(source, exit, level2ActiveIdentitiesAtStart, rewardDomain);
     };
-    const auto campaignIdentity = [this](const std::size_t index) {
-        const auto ordinary = level2EntityActorPoolSlots_[index];
-        const auto fixed = level2EntityFixedPoolSlots_[index];
-        const auto projectile = level2EntityProjectilePoolSlots_[index];
-        if (ordinary < level2ActorPoolSize_) { return ordinary; }
-        if (fixed < level2FixedObjectPoolSize_) { return level2ActorPoolSize_ * 3 + fixed; }
-        if (projectile < level2ProjectilePoolSize_) { return level2ActorPoolSize_ + projectile; }
-        return level2ActorPoolSize_ * 2 + level2EntityDeathEffectPoolSlots_[index];
-    };
-    const auto campaignIndex = [this](const std::size_t identity) {
-        const auto kind = identity / level2ActorPoolSize_;
-        const auto slot = identity % level2ActorPoolSize_;
-        const auto& slots = kind == 0 ? level2EntityActorPoolSlots_ : kind == 1 ? level2EntityProjectilePoolSlots_
-            : kind == 2 ? level2EntityDeathEffectPoolSlots_ : level2EntityFixedPoolSlots_;
-        const auto found = std::find(slots.begin(), slots.end(), slot);
-        return found == slots.end() ? static_cast<std::size_t>(-1)
-            : static_cast<std::size_t>(found - slots.begin());
-    };
-    const auto campaignHit = [this, &campaignIndex, &removeLevel2Entity,
-        &spawnLevel2TransientEffect, &deployGuardianReward](Level1Entity& shadow,
-        const std::uint8_t amount, const std::size_t identity,
-        const std::optional<FixedPosition> effectPosition = {}) {
-        const auto wasAlive=shadow.stateBytes4dTo52[1]!=0;
-        const auto hit = campaignActorHit(shadow, amount, static_cast<std::uint8_t>(activeCampaignLevel_));
-        if(hit.lethal&&wasAlive) {recordDestruction(shadow,effectPosition.value_or(shadow.position),hit.eventId);}
-        const auto specialRewardAllowed = postWaveObjectIndex() == static_cast<std::size_t>(-1)
-            || shadow.collisionContactAllocationIndex != postWaveObjectIndex();
-        shadow.stateBytes4dTo52[1] = hit.health;
-        const auto target = identity == static_cast<std::size_t>(-1) ? identity : campaignIndex(identity);
-        if (target < level2Entities_.size()) {
-            level2Entities_[target].stateBytes4dTo52[1] = hit.health;
-        }
-        auto effect = shadow;
-        if (effectPosition) { effect.position = *effectPosition; }
-        for (const auto action : hit.actions) {
-            switch (action) {
-            case CampaignActorHitAction::registerBonusDeath:
-                registerLevel5DestroyedTypeBonus(shadow);
-                break;
-            case CampaignActorHitAction::effect:
-                spawnLevel2TransientEffect(effect, static_cast<std::uint8_t>(hit.effectFirstFrame + 2), hit.effectTerminalFrame);
-                break;
-            case CampaignActorHitAction::retire: {
-                const auto live = identity == static_cast<std::size_t>(-1) ? identity : campaignIndex(identity);
-                if (live < level2Entities_.size()) {
-                    level2Entities_[live].stateBytes4dTo52[1] = 0;
-                    removeLevel2Entity(live);
-                }
-                break;
-            }
-            case CampaignActorHitAction::decrementEnemyCount:
-                --level2ActiveEnemyCount_;
-                break;
-            case CampaignActorHitAction::audio:
-                level2AudioEvents_.push_back({level2LoopTick_, hit.eventId});
-                break;
-            case CampaignActorHitAction::guardianScore:
-                level2Score_ += scaledCampaignAward(1000);
-                break;
-            case CampaignActorHitAction::sortObjects:
-                for (std::size_t destination = 0; destination < level2ActiveListOrder_.size(); ++destination) {
-                    auto selected = destination;
-                    for (auto candidate = destination + 1; candidate < level2ActiveListOrder_.size(); ++candidate) {
-                        if (level2Entities_[level2ActiveListOrder_[selected]].presenterDistance
-                            < level2Entities_[level2ActiveListOrder_[candidate]].presenterDistance) {
-                            selected = candidate;
-                        }
-                    }
-                    std::swap(level2ActiveListOrder_[destination], level2ActiveListOrder_[selected]);
-                }
-                break;
-            case CampaignActorHitAction::guardianReward:
-                deployGuardianReward(shadow, CampaignExit::greenReward);
-                break;
-            case CampaignActorHitAction::victory:
-                enterPlayableGuardianVictory();
-                break;
-            case CampaignActorHitAction::deactivateLevel:
-                break; //The retained victory owner clears the active level after7512.
-            case CampaignActorHitAction::specialRewardIfEligible:
-                if (specialRewardAllowed) { deployGuardianReward(shadow, CampaignExit::blueWarp); }
-                break;
-            }
-        }
-        return hit.lethal;
-    };
-    auto playerCollisionIndex = static_cast<std::size_t>(-1);
-    for (const auto index : level2ActiveListOrder_) {
-        if (resuming || index >= level2Entities_.size()) {
-            continue;
-        }
-        if (!actorExistedAtStart(index)) {
-            continue;
-        }
-        auto& entity = level2Entities_[index];
-        const auto flags = static_cast<std::int8_t>(
-            entity.stateBytes4dTo52[0]
-        );
-        if (
-            flags == -3
-            || flags == -4
-            || !level2Collides(entity, level2Player_)
-        ) {
-            continue;
-        }
-        entity.collisionContactAllocationIndex =
-            static_cast<std::size_t>(-1);
-        entity.collisionContactIsPlayer = true;
-        playerCollisionIndex = index;
-    }
-    if (playerCollisionIndex < level2Entities_.size()) {
-        level2PrefixGuards_.reset();
-        const auto contactIdentity=playableCampaignFrames_ ? campaignIdentity(playerCollisionIndex) : 0;
-        const auto contactRecord=[&]() -> Level1Entity& {
-            if(!playableCampaignFrames_) {return level2Entities_[playerCollisionIndex];}
-            const auto live=campaignIndex(contactIdentity);
-            if(live<level2Entities_.size()) {return level2Entities_[live];}
-            if(contactIdentity<level2ActorPoolSize_) {return level2ActorPool_[contactIdentity];}
-            return level2FixedPool_[contactIdentity-level2ActorPoolSize_*3];
-        };
-        const auto retireContact=[&]() {
-            if(!playableCampaignFrames_) {removeLevel2Entity(playerCollisionIndex);return;}
-            const auto live=campaignIndex(contactIdentity);
-            if(live<level2Entities_.size()) {removeLevel2Entity(live);}
-        };
-        if(playableCampaignFrames_ && level1_.systemTimers_[1]!=0) {
-            auto shadow=contactRecord();
-            const auto amount=static_cast<std::uint8_t>(level1_.systemTimers_[6]!=0 ? 15 : 5);
-            if(campaignHit(shadow,amount,contactIdentity)) {
-                level2AudioEvents_.push_back({level2LoopTick_,21});
-                constexpr std::array<std::uint16_t,14> points{0,20,35,20,30,75,90,0,25,30,40,50,60,10};
-                if(shadow.type>=0 && shadow.type<static_cast<std::int16_t>(points.size())) {
-                    level2Score_ += scaledCampaignAward(points[shadow.type]);
-                }
-            }
-            if(phase_==GameplayPhase::endingEntry) {return;}
-            playerCollisionIndex=campaignIndex(contactIdentity);
-        }
-        const auto collisionType=contactRecord().type;
-        if (collisionType == 25 || collisionType == 26) {
-            if(playableCampaignFrames_ && level2PresentationAllocationRevision_!=level2NonProjectileAllocationRevision_) {
-                //Shield impact4580 appends49F8;6F52 radar still walks inherited45D2.
-                level2ActiveListOrder_=remapLevel2BoundaryOrder(level2ActiveIdentitiesAtStart);
-                snapshotLevel2Presentation();
-            }
-            level2Complete_ = true;
-            if (playableCampaignFrames_) {
-                playableExit_=static_cast<CampaignExit>(collisionType);
-                level2PickupIndex_=playerCollisionIndex;
-            }
-            level3CompletionByPickup_ = activeCampaignLevel_ == 2;
-            if (playableCampaignFrames_ || activeCampaignLevel_ == 1 || activeCampaignLevel_ == 4) {
-                if (activeCampaignLevel_ == 4 && collisionType == 25) {
-                    level5SuccessContinuation_ = Level5SuccessContinuation{
-                        static_cast<std::uint16_t>(level2LoopTick_ - 1),
-                        level2EntityFixedPoolSlots_.at(playerCollisionIndex), level2AllocationRevision_};
-                }
-                if (playableCampaignFrames_ || (activeCampaignLevel_ == 1 && collisionType == 25)) {
-                    std::vector<std::int16_t> types;
-                    types.reserve(level2Entities_.size());
-                    for (const auto& actor : level2Entities_) {
-                        types.push_back(actor.type);
-                    }
-                    level2SuccessContinuation_ = Level2SuccessContinuation{
-                        static_cast<std::uint16_t>(level2LoopTick_ - 1), playerCollisionIndex,
-                        level2EntityFixedPoolSlots_.at(playerCollisionIndex), level2AllocationRevision_,
-                        level2ActiveListOrder_, level2EntityFixedPoolSlots_, std::move(types)};
-                }
-                // Native 0784 calls the blocking 6f52 presenter here,
-                // before the actor walk and ground update. Preserve that
-                // entry state; do not simulate the remainder of this loop
-                // while the success presentation is active.
-                // Intact controlled Level 2 loop 2298 exercises this path.
-                if (renderer != nullptr) {
-                    advanceCockpitIndicator();
-                }
-                refreshLevel2SightPhase();
-                return;
-            }
-        } else if (playableCampaignFrames_ && (collisionType==24 || collisionType==FuelBayRecovery::stationType)) {
-            //081A/0910 bypass solid rebound; the inner700-unit gate opens the bay.
-            if (contactRecord().presenterDistance < FuelBayRecovery::entryRange) {
-                for (const auto index : level2ActiveListOrder_) {
-                    auto& station=level2Entities_[index];
-                    if (station.type!=FuelBayRecovery::stationType) {continue;}
-                    const auto slot=level2EntityFixedPoolSlots_[index];
-                    if (slot>=level2FixedObjectPoolSize_) {throw std::logic_error("fuel station has no physical FE owner");}
-                    station.stateBytes4dTo52[2]=1;level2FixedPool_[slot]=station;
-                    fuelBay_.fixedSlot=slot;level2AudioEvents_.push_back({level2LoopTick_,FuelBayRecovery::entryEvent});
-                }
-            }
-        } else if (playableCampaignFrames_ && collisionType==43) {
-            contactRecord().collisionContactAllocationIndex=static_cast<std::size_t>(-1);
-            contactRecord().collisionContactIsPlayer=false;
-        } else if (collisionType == 48) {
-            // FUN_1000:0784 handles the airborne guardian emission before
-            // the shared solid-contact backout. It retires Type 0x30,
-            // dispatches event 9, then FUN_1000:0e7c(5) dispatches event 6
-            // and removes 5 * 4 armor. Player translation and momentum are
-            // deliberately left unchanged.
-            contactRecord()
-                .stateBytes4dTo52[1] = 0;
-            contactRecord().collisionContactIsPlayer = false;
-            playerContactType48ActorSlot =
-                playableCampaignFrames_ ? contactIdentity : level2EntityActorPoolSlots_[playerCollisionIndex];
-            level2AudioEvents_.push_back({level2LoopTick_, 9});
-            level2AudioEvents_.push_back({level2LoopTick_, 6});
-            level2PlayerArmor_ = playableCampaignFrames_
-                ? playableArmorAfterDamage(level2PlayerArmor_,5,level1_.systemTimers_[1]!=0
-                    ? PlayableShield::active : PlayableShield::inactive)
-                : static_cast<std::int16_t>(level2PlayerArmor_-20);
-        } else if (collisionType == 46) {
-            // FUN_1000:0784 marks the guardian pulse's transient display
-            // effect and returns without applying the shared solid-contact
-            // translation backout. DS:51ec quarters both control velocities
-            // on the following input update.
-            level2Type46ContactSlowdown_ = true;
-            if (playableCampaignFrames_ && activeCampaignLevel_ == 5) {
-                --level2PlayerArmor_; //0890 decrements armor directly, without0E7C/audio.
-            }
-        } else if (collisionType == 42) {
-            const auto payload = contactRecord().stateBytes4dTo52[5];
-            if (playableCampaignFrames_) {
-                constexpr std::uint8_t jumpPayload = 3;
-                constexpr std::size_t jumpSystem = jumpPayload - 1;
-                if (payload < 1 || payload > Level1State::systemCount) {
-                    throw std::invalid_argument("invalid playable bonus payload");
-                }
-                validatePlayableJumpState(playableJumpState(),PlayableSystemDomain::fullBundle);
-                if (payload == jumpPayload
-                    && (level2Player_.position.z != 0 || level1_.systemTimers_[jumpSystem] != 0)) {
-                    throw std::invalid_argument("playable bonus cannot repair Jump during flight");
-                }
-            }
-            if (activeCampaignLevel_ == 4 && !playableCampaignFrames_
-                && (payload < 1 || payload > Level1State::systemCount
-                    || level1_.systemStatusLevels_[payload - 1] < 0
-                    || level1_.selectedSystem_ != -1
-                    || std::any_of(level1_.systemTimers_.begin(), level1_.systemTimers_.end(),
-                        [](const auto timer) { return timer != 0; }))) {
-                throw std::invalid_argument("Level5 bonus repair requires an untimed unselected system");
-            }
-            contactRecord().stateBytes4dTo52[1] = 0;
-            if (activeCampaignLevel_ != 4) {
-                contactRecord().collisionContactIsPlayer = false;
-            }
-            level2Score_ += scaledCampaignAward(100);
-            level2AudioEvents_.push_back({level2LoopTick_, 24});
-            if (playableCampaignFrames_ || activeCampaignLevel_ == 4) {
-                level1_.repairBonusSystem(payload);
-            }
-            retireContact();
-            level2PickupIndex_ = static_cast<std::size_t>(-1);
-        } else {
-            const auto contactPose=contactRecord();
-            if (playableCampaignFrames_) {
-                if(collisionType==4) {
-                    //08BC retains the Type4 pointer even after shield retirement.
-                    constexpr std::int16_t contactDamageUnits=-25;
-                    level2AudioEvents_.push_back({level2LoopTick_,6});
-                    level2PlayerArmor_=playableArmorAfterDamage(level2PlayerArmor_,contactDamageUnits,
-                        level1_.systemTimers_[1]!=0 ? PlayableShield::active : PlayableShield::inactive);
-                }
-                retireContactHazard(contactRecord(),level2ActiveEnemyCount_,
-                    [&]() {recordDestruction(contactPose,contactPose.position,6);retireContact();},
-                    [&](const std::int16_t units) {
-                        level2AudioEvents_.push_back({level2LoopTick_,6});
-                        level2PlayerArmor_=playableArmorAfterDamage(level2PlayerArmor_,units,
-                            level1_.systemTimers_[1]!=0 ? PlayableShield::active : PlayableShield::inactive);
-                    });
-            }
-            if (level2Player_.forwardVelocity == 0) {
-                level2Player_.forwardVelocity = 10;
-            }
-            do {
-                reverseEntityTranslation(level2Player_);
-            } while (
-                level2Collides(
-                    contactPose,
-                    level2Player_
-                )
-            );
-            level2Player_.forwardVelocity = static_cast<std::int16_t>(
-                -level2Player_.forwardVelocity
-            );
-            level2PlayerCollisionMomentum_ =
-                level2Player_.forwardVelocity;
-            level2AudioEvents_.push_back({level2LoopTick_, 9});
-            if (collisionType == 13) {
-                level2PlayerArmor_ = playableCampaignFrames_
-                    ? playableArmorAfterDamage(level2PlayerArmor_,32,level1_.systemTimers_[1]!=0
-                        ? PlayableShield::active : PlayableShield::inactive)
-                    : static_cast<std::int16_t>(level2PlayerArmor_-128);
-                level2AudioEvents_.push_back({level2LoopTick_, 6});
-                level2AudioEvents_.push_back({level2LoopTick_, 6});
-                if (level2ActiveEnemyCount_ > 0) {
-                    --level2ActiveEnemyCount_;
-                }
-                if (activeCampaignLevel_ == 4) {
-                    contactRecord().stateBytes4dTo52[1] = 0;
-                    contactRecord().collisionContactIsPlayer = true;
-                }
-                retireContact();
-            }
-        }
+    const CampaignCombatCallbacks combat{removeLevel2Entity, spawnLevel2TransientEffect, deployGuardianReward};
+    const auto playerContact = resolveCampaignPlayerContact(contactStart, continuation, renderer, combat);
+    if (playerContact.flow == CampaignContactFlow::suspendFrame) {
+        return;
     }
 
     // FUN_1000:04d8 owns the shared projectile lifetime. A newly launched
@@ -3346,7 +2632,7 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
     // 0AC8 is a main-presenter callback, after 3768's membership rebuild.
     // Retain that list and its compact identities before terminal effects leave it.
     const auto level2EffectPresenterOrder = level2ActiveListOrder_;
-    const auto level2EffectPresenterOrderRebuilt = removedLevel2Entity != static_cast<std::size_t>(-1);
+    const auto level2EffectPresenterOrderRebuilt = retirement.lastNonEffectRemoval != static_cast<std::size_t>(-1);
     std::array<std::size_t, level2DeathEffectPoolSize_> level2DeathEffectIndexAtPresenter{};
     level2DeathEffectIndexAtPresenter.fill(static_cast<std::size_t>(-1));
     for (std::size_t index = 0; index < level2Entities_.size(); ++index) {
@@ -3520,470 +2806,14 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         }
         advanceEntityKinematics(level2Entities_[index]);
     }
-    const auto projectileOrder = activeCampaignLevel_ == 4
-        ? remapLevel2BoundaryOrder(level2ActiveIdentitiesAtStart) : level2ActiveListOrder_;
-    if (activeCampaignLevel_ == 4) {
-        for (const auto identity : level2ActiveIdentitiesAtStart) {
-            if (identity.pool != 3 || std::find(level2EntityFixedPoolSlots_.begin(),
-                level2EntityFixedPoolSlots_.end(), identity.slot) != level2EntityFixedPoolSlots_.end()) {
-                continue;
-            }
-            for (const auto index : projectileOrder) {
-                const auto slot = level2EntityProjectilePoolSlots_[index];
-                if (slot < level2ProjectilePoolSize_ && level2ProjectileActiveAtStart[slot]
-                    && level2Collides(level2Entities_[index], level2FixedPool_[identity.slot])) {
-                    throw std::invalid_argument("Level5 projectile contact requires its retired fixed target ordering");
-                }
-            }
-        }
+    const CampaignContactMotion contactMotion{level2ActorPositionsAtUpdateStart,
+        level2ActorPositionAtUpdateStartValid, level2ActorUpdateOrder};
+    const auto projectileContact = resolveCampaignPlayerProjectileHits(contactStart, contactMotion, combat);
+    if (projectileContact.flow == CampaignContactFlow::suspendFrame) {
+        return;
     }
-    for (const auto candidateSourceIndex : projectileOrder) {
-        auto sourceIndex = candidateSourceIndex;
-        if (sourceIndex >= level2Entities_.size()) {
-            continue;
-        }
-        const auto sourceProjectileSlot =
-            level2EntityProjectilePoolSlots_[sourceIndex];
-        if (
-            level2Entities_[sourceIndex].type != 23
-            || sourceProjectileSlot >= level2ProjectilePoolSize_
-            || !level2ProjectileActiveAtStart[sourceProjectileSlot]
-        ) {
-            continue;
-        }
-        const auto sourceOrder = std::find(
-            projectileOrder.begin(),
-            projectileOrder.end(),
-            sourceIndex
-        );
-        auto targetIndex = static_cast<std::size_t>(-1);
-        for (const auto candidate : projectileOrder) {
-            // 072a accepts fixed objects (category -2), including the
-            // post-guardian pickup. Pool ownership is not a collision gate.
-            // Keep the broader campaign correction scoped to verified L2.
-            if (
-                candidate >= level2Entities_.size()
-                || candidate == sourceIndex
-                || (level2EntityActorPoolSlots_[candidate]
-                        >= level2ActorPoolSize_
-                    && ((!playableCampaignFrames_ && activeCampaignLevel_ != 1 && activeCampaignLevel_ != 4)
-                        || level2Entities_[candidate].stateBytes4dTo52[0] != 254))
-                || !actorExistedAtStart(candidate)
-                || level2Entities_[candidate].type == 46
-            ) {
-                continue;
-            }
-            auto collisionTarget = level2Entities_[candidate];
-            const auto candidateActorSlot =
-                level2EntityActorPoolSlots_[candidate];
-            if (
-                sourceOrder != projectileOrder.end()
-                && candidateActorSlot < level2ActorPoolSize_
-                && level2ActorPositionAtUpdateStartValid[candidateActorSlot]
-                && static_cast<std::size_t>(
-                    sourceOrder - projectileOrder.begin()
-                ) < level2ActorUpdateOrder[candidateActorSlot]
-            ) {
-                // FUN_1000:9298 invokes the Type-23 callback before this
-                // later actor updater. Native Level 3 loop 1061->1062 misses
-                // Type 44 at its boundary-start center; using the portable
-                // pre-integrated center creates a false hit one tick early.
-                collisionTarget.position =
-                    level2ActorPositionsAtUpdateStart[candidateActorSlot];
-            }
-            if (level2Collides(
-                level2Entities_[sourceIndex],
-                collisionTarget
-            )) {
-                targetIndex = candidate;
-                break;
-            }
-        }
-        if (targetIndex >= level2Entities_.size()) {
-            continue;
-        }
-        level2PrefixGuards_.reset();
-        const auto impactProjectile = level2Entities_[sourceIndex];
-
-        // FUN_1000:9298 dispatches callbacks in the existing active-list
-        // order. A behavior-3 Type 1/4 actor still consumes its reset choice
-        // when it precedes the projectile that destroys it, independent of
-        // weapon-slot availability. The separated portable passes must
-        // preserve that pre-destruction callback.
-        const auto targetOrder = std::find(
-            projectileOrder.begin(),
-            projectileOrder.end(),
-            targetIndex
-        );
-        auto& targetBeforeHit = level2Entities_[targetIndex];
-        if (
-            targetOrder < sourceOrder
-            && (targetBeforeHit.type == 1 || targetBeforeHit.type == 4)
-            && targetBeforeHit.stateBytes4dTo52[1] == 1
-            && targetBeforeHit.stateBytes4dTo52[5] == 3
-        ) {
-            const auto turnLimit = static_cast<std::int16_t>(
-                targetBeforeHit.type == 1 ? 143 : 271
-            );
-            const auto difference = static_cast<std::int16_t>(
-                targetBeforeHit.targetHeading - targetBeforeHit.yaw
-            );
-            targetBeforeHit.yawVelocity = static_cast<std::int16_t>(
-                std::clamp<std::int32_t>(
-                    difference,
-                    -turnLimit,
-                    turnLimit
-                )
-            );
-            const auto choice = static_cast<std::uint8_t>(level2Rng_.next());
-            const auto resetThreshold = static_cast<std::uint8_t>(
-                targetBeforeHit.type == 1 ? 5 : 6
-            );
-            if (choice < resetThreshold) {
-                targetBeforeHit.stateBytes4dTo52[5] = 0;
-            }
-        }
-
-        auto impactPosition = level2Entities_[targetIndex].position;
-        const auto impactActorSlot =
-            level2EntityActorPoolSlots_[targetIndex];
-        if (
-            sourceOrder < targetOrder
-            && impactActorSlot < level2ActorPoolSize_
-            && level2ActorPositionAtUpdateStartValid[impactActorSlot]
-        ) {
-            // FUN_1000:9298 invokes the projectile callback before the
-            // target updater in this inherited active-list order. Route-v12
-            // tick 7708 exposes it because the moving Type 47 center would
-            // otherwise change before FUN_1000:1176 copies its position.
-            impactPosition =
-                level2ActorPositionsAtUpdateStart[impactActorSlot];
-        }
-        if (campaignGuardians || (playableCampaignFrames_ && level2Entities_[targetIndex].stateBytes4dTo52[4] == 0xf3)) {
-            auto shadow = level2Entities_[targetIndex];
-            const auto identity = campaignIdentity(targetIndex);
-            const auto guardian = shadow.stateBytes4dTo52[4] == 5;
-            auto amount = static_cast<std::uint8_t>(impactProjectile.stateBytes4dTo52[2] == 0 ? 1 : 5);
-            auto permitted = true;
-            if (guardian && activeCampaignLevel_ == 5) {
-                const auto difference = static_cast<std::int16_t>(shadow.yaw - impactProjectile.yaw);
-                const auto magnitude = difference < 0 ? static_cast<std::int16_t>(-static_cast<int>(difference)) : difference;
-                permitted = magnitude <= 0x2fff;
-                amount = impactProjectile.stateBytes4dTo52[2] == 0 ? 20 : 60;
-            }
-            const auto healthBefore=shadow.stateBytes4dTo52[1];
-            const auto killed=permitted&&campaignHit(shadow,amount,identity,impactPosition);
-            if(playableCampaignFrames_&&impactProjectile.ownerIsPlayer&&shadow.stateBytes4dTo52[1]<healthBefore) {
-                combatFeedback_.hit=CombatCue{ticks_,activeCampaignLevel_,healthBefore-shadow.stateBytes4dTo52[1]};
-            }
-            if (killed && !guardian) {
-                constexpr std::array<std::uint16_t,17> points{{0,20,35,20,30,75,90,0,25,30,40,50,60,10,5,5,5}};
-                if (shadow.type >= 0 && static_cast<std::size_t>(shadow.type) < points.size()) {
-                    level2Score_ += scaledCampaignAward(points[shadow.type]);
-                } else if (shadow.type >= 46) {
-                    level2Score_ += scaledCampaignAward(5);
-                }
-            }
-            const auto shot = std::find(level2EntityProjectilePoolSlots_.begin(), level2EntityProjectilePoolSlots_.end(), sourceProjectileSlot);
-            if (shot != level2EntityProjectilePoolSlots_.end()) {
-                removeLevel2Entity(static_cast<std::size_t>(shot - level2EntityProjectilePoolSlots_.begin()));
-            }
-            if (phase_ == GameplayPhase::endingEntry) { return; }
-            break;
-        }
-        auto lethal = false;
-        auto& target = level2Entities_[targetIndex];
-        if (activeCampaignLevel_ == 4 && target.type == 44 && target.stateBytes4dTo52[1] == 1
-            && level2PickupIndex_ == static_cast<std::size_t>(-1)) {
-            // Qualify the partial4506 record before committing1176's lethal transaction.
-            auto available = false;
-            for (std::size_t slot = 0; slot < level2FixedObjectPoolSize_; ++slot) {
-                if (!level2FixedPoolKnown_[slot]) {
-                    throw std::invalid_argument("Level5 reward requires known fixed-record history");
-                }
-                const auto& record = level2FixedPool_[slot];
-                if (record.active()) {
-                    continue;
-                }
-                if (record.renderProfile != WorldActorRenderProfile::noHandles
-                    && record.renderProfile != WorldActorRenderProfile::inlineSelectorNoCallback) {
-                    throw std::invalid_argument("Level5 reward requires a known callback-free fixed record");
-                }
-                available = true;
-                break;
-            }
-            if (!available) {
-                throw std::invalid_argument("Level5 reward full-pool fallback is unsupported");
-            }
-        }
-        const auto healthBefore=target.stateBytes4dTo52[1];
-        const auto targetWasAlive=healthBefore>0;
-        if (target.stateBytes4dTo52[1] > 0) {
-            const auto amount=playableCampaignFrames_ && impactProjectile.stateBytes4dTo52[2]!=0 ? 5 : 1;
-            target.stateBytes4dTo52[1]=static_cast<std::uint8_t>(
-                std::max(0,static_cast<int>(target.stateBytes4dTo52[1])-amount));
-        }
-        if (target.stateBytes4dTo52[1] == 0) {
-            if (target.type == 25 || target.type == 26) {
-                target.stateBytes4dTo52[1] = 100;
-            } else {
-                lethal = true;
-            }
-        }
-        if(playableCampaignFrames_&&impactProjectile.ownerIsPlayer&&target.stateBytes4dTo52[1]<healthBefore) {
-            combatFeedback_.hit=CombatCue{ticks_,activeCampaignLevel_,healthBefore-target.stateBytes4dTo52[1]};
-        }
-        const auto guardianDeath = lethal && (target.type == 44 || target.type == 45);
-        if(lethal&&targetWasAlive) {
-            recordDestruction(target,impactPosition,guardianDeath?12:
-                (playableCampaignFrames_&&impactProjectile.stateBytes4dTo52[2]!=0?18:6));
-        }
-        // Original1176 selects guardian event12 instead of ordinary death6.
-        if (!guardianDeath) {
-            level2AudioEvents_.push_back({
-                level2LoopTick_,
-                static_cast<std::uint16_t>(lethal
-                    ? (playableCampaignFrames_ && impactProjectile.stateBytes4dTo52[2]!=0 ? 18 : 6) : 5),
-            });
-        }
-
-        auto adjustedTargetIndex = targetIndex;
-        auto pendingEffect = false;
-        Level1Entity pendingEffectSource{};
-        std::uint8_t pendingEffectFirstFrame = 0;
-        std::uint8_t pendingEffectTerminalFrame = 0;
-        auto pendingGuardianPickup = false;
-        if (lethal) {
-            constexpr std::array<std::uint16_t, 17> scoreByType{{
-                0, 20, 35, 20, 30, 75, 90,
-                0, 25, 30, 40, 50, 60, 10, 5, 5, 5,
-            }};
-            const auto destroyedType = target.type;
-            const auto destroyed = target;
-            if (
-                destroyedType == 48
-                && impactActorSlot < level2ActorPoolSize_
-            ) {
-                retiredType48ActorSlot = impactActorSlot;
-                if (activeCampaignLevel_ == 1) {
-                    // 0784 interleaves actor contacts and projectile hits.
-                    // At intact loop 2178, a92e still sees +5f=b29e after
-                    // that Type-48 record has died. Our separated hit pass
-                    // must retain the earlier guardian contact until its
-                    // callback; vector retirement must not erase the gate.
-                    const auto projectileIdentity = std::find_if(
-                        level2ActiveIdentitiesAtStart.begin(),
-                        level2ActiveIdentitiesAtStart.end(),
-                        [sourceProjectileSlot](const auto& identity) {
-                            return identity.pool == 1
-                                && identity.slot == sourceProjectileSlot;
-                        }
-                    );
-                    for (std::size_t guardianIndex = 0;
-                         guardianIndex < level2Entities_.size();
-                         ++guardianIndex) {
-                        const auto& guardian = level2Entities_[guardianIndex];
-                        const auto guardianSlot =
-                            level2EntityActorPoolSlots_[guardianIndex];
-                        if ((guardian.type != 44 && guardian.type != 45)
-                            || guardianSlot >= level2ActorPoolSize_
-                            || projectileIdentity == level2ActiveIdentitiesAtStart.end()
-                            || level2ActorUpdateOrder[guardianSlot]
-                                >= projectileIdentity->activePosition) {
-                            continue;
-                        }
-                        auto contactTarget = destroyed;
-                        if (level2ActorUpdateOrder[guardianSlot]
-                                < level2ActorUpdateOrder[impactActorSlot]
-                            && level2ActorPositionAtUpdateStartValid[impactActorSlot]) {
-                            contactTarget.position =
-                                level2ActorPositionsAtUpdateStart[impactActorSlot];
-                        }
-                        if (level2Collides(guardian, contactTarget)) {
-                            level2GuardianRetiredContact[guardianSlot] = true;
-                        }
-                    }
-                }
-            }
-            if (
-                destroyedType >= 0
-                && static_cast<std::size_t>(destroyedType)
-                    < scoreByType.size()
-            ) {
-                level2Score_ += scaledCampaignAward(scoreByType[ static_cast<std::size_t>(destroyedType) ]);
-            } else if (destroyedType >= 46) {
-                // FUN_1000_04d8 awards the shared five-point fallback for
-                // every projectile-destroyed type at or above 46.
-                level2Score_ += scaledCampaignAward(5);
-            }
-            if (
-                target.stateBytes4dTo52[0] == 0xff
-                && level2ActiveEnemyCount_ > 0
-            ) {
-                --level2ActiveEnemyCount_;
-            }
-            explosionTicksRemaining_ = 18;
-            explosionAge_ = 0;
-            explosionPosition_ = impactPosition;
-            const auto distanceBucket = std::min<std::uint32_t>(
-                destroyed.presenterDistance / 0x1964U,
-                5U
-            );
-            pendingEffect = true;
-            pendingEffectSource = destroyed;
-            pendingEffectSource.position = impactPosition;
-            pendingEffectFirstFrame = static_cast<std::uint8_t>(
-                distanceBucket * 3U + 15U
-            );
-            pendingEffectTerminalFrame = static_cast<std::uint8_t>(
-                distanceBucket * 3U + 17U
-            );
-            if (guardianDeath) {
-                const auto eventTick = activeCampaignLevel_ == 4
-                    ? static_cast<std::uint16_t>(level2LoopTick_ - 1)
-                    : level2LoopTick_;
-                level2AudioEvents_.push_back({eventTick, 12});
-                level2Score_ += scaledCampaignAward(1000);
-                pendingGuardianPickup = true;
-            }
-        } else {
-            // FUN_1000:1176 calls FUN_1000:0bc8 with the short frame
-            // interval for every surviving hit. At this post-update
-            // boundary its first presented frame has advanced to two.
-            pendingEffect = true;
-            pendingEffectSource = target;
-            pendingEffectSource.position = impactPosition;
-            pendingEffectFirstFrame = 2;
-            pendingEffectTerminalFrame = 12;
-        }
-        if ((playableCampaignFrames_ || activeCampaignLevel_ == 4) && lethal) {
-            const auto projectileIdentity = std::find_if(level2ActiveIdentitiesAtStart.begin(),
-                level2ActiveIdentitiesAtStart.end(), [sourceProjectileSlot](const auto& identity) {
-                    return identity.pool == 1 && identity.slot == sourceProjectileSlot;
-                });
-            const auto projectilePosition = projectileIdentity->activePosition;
-            const auto allocatedBonus = registerLevel5DestroyedTypeBonus(pendingEffectSource);
-            if (allocatedBonus) {
-                const auto inherited = std::find_if(level2ActiveIdentitiesAtStart.begin(),
-                    level2ActiveIdentitiesAtStart.end(), [allocatedBonus](const auto& identity) {
-                        return identity.pool == 3 && identity.slot == *allocatedBonus;
-                    });
-                if (inherited != level2ActiveIdentitiesAtStart.end()
-                    && inherited->activePosition > projectilePosition) {
-                    //The old pointer now names the new904c record, before its0784 motion.
-                    const auto fixed = std::find(level2EntityFixedPoolSlots_.begin(),
-                        level2EntityFixedPoolSlots_.end(), *allocatedBonus);
-                    advanceEntityKinematics(level2Entities_[static_cast<std::size_t>(
-                        fixed - level2EntityFixedPoolSlots_.begin())]);
-                }
-            }
-            const auto shot = std::find(level2EntityProjectilePoolSlots_.begin(),
-                level2EntityProjectilePoolSlots_.end(), sourceProjectileSlot);
-            sourceIndex = static_cast<std::size_t>(shot - level2EntityProjectilePoolSlots_.begin());
-        }
-        // Ordinary impact callbacks retire their projectile pool record,
-        // append the explosion, and only then retire a lethal target. Tick
-        // 738 makes that order visible in native 0x49f8 swap-back state.
-        // The guardian's nested FUN_1000:45c6 callback is different: it
-        // appends the effect, removes the guardian, deploys Type 25, and only
-        // then returns to the projectile callback for source retirement.
-        // Natural Level 3 loop 3292 exposes that order with two surviving
-        // projectile pointers.
-        const auto allocationOrderBeforeImpact =
-            level2AllocationListOrder_;
-        const auto deferGuardianProjectileRetirement =
-            pendingGuardianPickup;
-        if (
-            !deferGuardianProjectileRetirement
-            && sourceIndex < level2Entities_.size()
-        ) {
-            removeLevel2Entity(sourceIndex);
-            if (sourceIndex < adjustedTargetIndex) {
-                --adjustedTargetIndex;
-            }
-        }
-        auto spawnedEffect = false;
-        if (pendingEffect) {
-            spawnedEffect = spawnLevel2TransientEffect(
-                pendingEffectSource,
-                pendingEffectFirstFrame,
-                pendingEffectTerminalFrame
-            );
-        }
-        if (!lethal && spawnedEffect) {
-            // A nonlethal impact changes the just-retired projectile record
-            // into its transient hit effect without moving that record in
-            // the native allocation list.  Preserve the old pointer-list
-            // position while remapping vector indices around the removal.
-            const auto effectIndex = level2Entities_.size() - 1;
-            level2AllocationListOrder_.clear();
-            level2AllocationListOrder_.reserve(
-                allocationOrderBeforeImpact.size()
-            );
-            for (const auto priorIndex : allocationOrderBeforeImpact) {
-                if (priorIndex == sourceIndex) {
-                    level2AllocationListOrder_.push_back(effectIndex);
-                } else {
-                    level2AllocationListOrder_.push_back(
-                        priorIndex > sourceIndex
-                            ? priorIndex - 1
-                            : priorIndex
-                    );
-                }
-            }
-            level2ObjectListOrder_ = level2AllocationListOrder_;
-            level2ActiveListOrder_ = level2AllocationListOrder_;
-            const auto effectSlot = level2EntityDeathEffectPoolSlots_[
-                effectIndex
-            ];
-            auto sourceActivePosition =
-                level2ActiveIdentitiesAtStart.size();
-            for (const auto identity : level2ActiveIdentitiesAtStart) {
-                if (
-                    identity.pool == 1
-                    && identity.slot == sourceProjectileSlot
-                ) {
-                    sourceActivePosition = identity.activePosition;
-                    break;
-                }
-            }
-            level2EffectSemanticActivePositionOverrides_.push_back({
-                effectSlot,
-                sourceActivePosition,
-            });
-        }
-        if (lethal && adjustedTargetIndex < level2Entities_.size()) {
-            removeLevel2Entity(adjustedTargetIndex);
-        }
-        if (pendingGuardianPickup) {
-            deployGuardianReward(pendingEffectSource, CampaignExit::greenReward);
-        }
-        if (deferGuardianProjectileRetirement) {
-            const auto deferredProjectile = std::find(
-                level2EntityProjectilePoolSlots_.begin(),
-                level2EntityProjectilePoolSlots_.end(),
-                sourceProjectileSlot
-            );
-            if (
-                deferredProjectile
-                    != level2EntityProjectilePoolSlots_.end()
-            ) {
-                const auto deferredIndex = static_cast<std::size_t>(
-                    deferredProjectile
-                        - level2EntityProjectilePoolSlots_.begin()
-                );
-                if (
-                    !playableCampaignFrames_ && level2PickupIndex_ > deferredIndex
-                    && level2PickupIndex_
-                        < static_cast<std::size_t>(-1)
-                ) {
-                    --level2PickupIndex_;
-                }
-                removeLevel2Entity(deferredIndex);
-            }
-        }
-        break;
-    }
+    const auto retiredType48ActorSlot = projectileContact.retiredType48ActorSlot;
+    const auto& level2GuardianRetiredContact = projectileContact.guardianRetiredContact;
     if (activeCampaignLevel_ == 4) {
         for (std::size_t index = 0; index < level2Entities_.size();) {
             const auto slot = level2EntityProjectilePoolSlots_[index];
@@ -3998,11 +2828,11 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             removeLevel2Entity(index);
         }
     }
-    if (playerContactType48ActorSlot < level2ActorPoolSize_) {
+    if (playerContact.retiredType48ActorSlot < level2ActorPoolSize_) {
         const auto pendingType48 = std::find(
             level2EntityActorPoolSlots_.begin(),
             level2EntityActorPoolSlots_.end(),
-            playerContactType48ActorSlot
+            playerContact.retiredType48ActorSlot
         );
         if (pendingType48 != level2EntityActorPoolSlots_.end()) {
             const auto pendingIndex = static_cast<std::size_t>(
@@ -4018,357 +2848,8 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             }
         }
     }
-    // FUN_1000:0784 walks the inherited pointer list. A Type-23 callback can
-    // rebuild the allocation list later in that same walk, but it cannot
-    // retroactively reorder actor collisions which preceded it. Portable
-    // projectile handling is separated into an earlier pass, so retain the
-    // boundary identities here instead of consuming the rebuilt list.
-    const auto level2CollisionOrder = remapLevel2BoundaryOrder(level2ActiveIdentitiesAtStart);
-    std::vector<std::size_t> collisionIdentities;
-    if(playableCampaignFrames_) {
-        for(const auto identity:level2ActiveIdentitiesAtStart) {
-            const auto base=identity.pool==0 ? 0 : identity.pool==1 ? level2ActorPoolSize_
-                : identity.pool==2 ? level2ActorPoolSize_*2 : level2ActorPoolSize_*3;
-            collisionIdentities.push_back(base+identity.slot);
-        }
-    }
-    const auto collisionCount=playableCampaignFrames_ ? collisionIdentities.size() : level2CollisionOrder.size();
-    auto sourceRemoval = static_cast<std::size_t>(-1);
-    std::int16_t sourceRemovalPlayerDamage = 0;
-    std::vector<std::size_t> level2Type47MutualHitActorSlots;
-    for (std::size_t position=0;position<collisionCount;++position) {
-        const auto sourceIndex=playableCampaignFrames_ ? campaignIndex(collisionIdentities[position])
-            : level2CollisionOrder[position];
-        if (sourceIndex>=level2Entities_.size() || !actorExistedAtStart(sourceIndex)) {
-            continue;
-        }
-        const auto sourceProjectileSlot =
-            level2EntityProjectilePoolSlots_[sourceIndex];
-        if (
-            sourceProjectileSlot < level2ProjectilePoolSize_
-            && !level2ProjectileActiveAtStart[sourceProjectileSlot]
-        ) {
-            continue;
-        }
-        auto& source = level2Entities_[sourceIndex];
-        if (retainedLevel3 && source.stateBytes4dTo52[0] != 0xff
-            && !(playableCampaignFrames_ && source.stateBytes4dTo52[0] == projectilePoolKind)) {
-            continue;
-        }
-        if (playableCampaignFrames_ && source.stateBytes4dTo52[0]==0xfe && source.type==43) {continue;}
-        if (source.stateBytes4dTo52[0] == 0xfe
-            && (source.type == 42 || (activeCampaignLevel_ == 4 && source.type == 25))) {
-            //0784 integrates only42; the player pass and0A9A own reward25.
-            continue;
-        }
-        const auto sourceFlags = static_cast<std::int8_t>(
-            source.stateBytes4dTo52[0]
-        );
-        const auto hostileProjectile =
-            source.type == 17
-            || source.type == 18
-            || source.type == 19
-            || source.type == 20
-            || source.type == 22;
-        if (sourceFlags == -4 || (sourceFlags == -3 && !hostileProjectile)) {
-            // FUN_1000:0784 dispatches -3 records to FUN_1000:04d8. Hostile
-            // shots still need its contact/retirement path: Level 2 loop
-            // 382->383 removes a Type-19 shot on Type 30. Player shots are
-            // handled above; presenter-only Type -1 records stay excluded
-            // (Level 3 loop 1532 leaves the Type-44 contact word clear).
-            continue;
-        }
-        const auto sourceActorSlot =
-            level2EntityActorPoolSlots_[sourceIndex];
-        auto sourceCollidedWithActor = false;
-        auto sourceCollidedWithType47 = false;
-        auto lastCollisionTargetType = std::int16_t{0};
-        auto lastBombSlot=level2FixedObjectPoolSize_;
-        if (level2Collides(source, level2Player_)) {
-            level2PrefixGuards_.reset();
-            if (source.type == 25 || source.type == 26) {
-                level2Complete_ = true;
-                level3CompletionByPickup_ = activeCampaignLevel_ == 2;
-                continue;
-            }
-            if (source.type == 13 || source.type == 47) {
-                // FUN_1000:0784 handles ground-riding Type 47 with the same
-                // post-integration player-impact retirement as Type 13.
-                sourceRemoval = sourceIndex;
-                sourceRemovalPlayerDamage = 128;
-                break;
-            }
-            if (hostileProjectile) {
-                sourceRemoval = sourceIndex;
-                sourceRemovalPlayerDamage = source.type == 19
-                    ? 80
-                    : source.type == 18
-                        ? 64
-                    : source.type == 20
-                        ? 56
-                        : source.type == 22 ? 104 : 40;
-                break;
-            }
-            if(source.type==4) {
-                //09B4 applies signed Type4 damage only on a current overlap.
-                constexpr std::int16_t contactDamageUnits=-25;
-                level2AudioEvents_.push_back({level2LoopTick_,6});
-                level2PlayerArmor_=playableArmorAfterDamage(level2PlayerArmor_,contactDamageUnits,
-                    level1_.systemTimers_[1]!=0 ? PlayableShield::active : PlayableShield::inactive);
-            }
-            if (
-                source.stateBytes4dTo52[4] != 3
-            ) {
-                source.collisionContactAllocationIndex =
-                    static_cast<std::size_t>(-1);
-                source.collisionContactIsPlayer = true;
-                // The player is a Type-0 target. After FUN_1000:0e50,
-                // FUN_1000:0784 therefore calls FUN_1000:3d10 for every
-                // non-Type-13/47 source. This includes both the state-2
-                // guardian contact at loop 1559 and the state-1 contact at
-                // loop 1698; limiting the backout by behavior state leaves an
-                // extra forward step in the portable actor.
-                if (source.type != 13 && source.type != 47) {
-                    reverseEntityTranslation(source);
-                }
-                if (
-                    sourceActorSlot < level2ActorPoolSize_
-                    && source.stateBytes4dTo52[4] == 1
-                ) {
-                    //0E50 changes class1 behavior; it does not damage armor.
-                    source.stateBytes4dTo52[5] = 4;
-                    source.behaviorTimer = 0;
-                } else if (source.stateBytes4dTo52[4] == 5) {
-                    // FUN_1000:0e50 dispatches FUN_1000:adcc for presentation
-                    // state 5. A player contact then calls FUN_1000:0e7c(-25),
-                    // which removes 100 armor and emits the shared impact
-                    // sound. Native Level 3 route v30 records 296->196 at
-                    // loop 1698 and repeats the contact on 1699/1700.
-                    level2PlayerArmor_ = static_cast<std::int16_t>(
-                        level2PlayerArmor_ - 100
-                    );
-                    level2AudioEvents_.push_back({level2LoopTick_, 6});
-                }
-            }
-            continue;
-        }
-        for (std::size_t targetPosition=0;targetPosition<collisionCount;++targetPosition) {
-            const auto targetIndex=playableCampaignFrames_ ? campaignIndex(collisionIdentities[targetPosition])
-                : level2CollisionOrder[targetPosition];
-            if(targetIndex>=level2Entities_.size()) {
-                //A preceding FD may retire43, but0784 still sees its physical OLD pointer.
-                if(playableCampaignFrames_ && collisionIdentities[targetPosition]/level2ActorPoolSize_==3) {
-                    auto& target=level2FixedPool_[collisionIdentities[targetPosition]%level2ActorPoolSize_];
-                    if(target.type==43 && level2Collides(source,target)) {
-                        target.collisionContactAllocationIndex=sourceIndex;
-                        target.collisionContactIsPlayer=false;
-                        source.collisionContactAllocationIndex=static_cast<std::size_t>(-1);
-                        source.collisionContactIsPlayer=false;
-                        sourceCollidedWithActor=true;
-                        lastCollisionTargetType=43;
-                        lastBombSlot=collisionIdentities[targetPosition]%level2ActorPoolSize_;
-                    }
-                }
-                continue;
-            }
-            if (
-                sourceIndex == targetIndex
-                || !actorExistedAtStart(targetIndex)
-            ) {
-                continue;
-            }
-            const auto targetProjectileSlot =
-                level2EntityProjectilePoolSlots_[targetIndex];
-            if (
-                targetProjectileSlot < level2ProjectilePoolSize_
-                && !level2ProjectileActiveAtStart[targetProjectileSlot]
-            ) {
-                continue;
-            }
-            auto& target = level2Entities_[targetIndex];
-            const auto targetFlags = static_cast<std::int8_t>(
-                target.stateBytes4dTo52[0]
-            );
-            if (targetFlags == -3 || targetFlags == -4) {
-                continue;
-            }
-            auto collisionTarget = target;
-            const auto targetActorSlot =
-                level2EntityActorPoolSlots_[targetIndex];
-            if (
-                sourceActorSlot < level2ActorPoolSize_
-                && targetActorSlot < level2ActorPoolSize_
-                && level2ActorPositionAtUpdateStartValid[targetActorSlot]
-                && level2ActorUpdateOrder[sourceActorSlot]
-                    < level2ActorUpdateOrder[targetActorSlot]
-            ) {
-                collisionTarget.position =
-                    level2ActorPositionsAtUpdateStart[targetActorSlot];
-            }
-            if (!level2Collides(source, collisionTarget)) {
-                continue;
-            }
-            if (hostileProjectile) {
-                if (
-                    !source.ownerIsPlayer
-                    && targetActorSlot < level2ActorPoolSize_
-                    && targetActorSlot == source.ownerAllocationIndex
-                ) {
-                    continue;
-                }
-                // Hostile shots retire on the first non-owner actor contact.
-                // The actor is not damaged; the same shared contact rule
-                // covers indestructible Type 30 and moving enemies.
-                sourceRemoval = sourceIndex;
-                sourceRemovalPlayerDamage = 0;
-                break;
-            }
-            level2PrefixGuards_.reset();
-            target.collisionContactAllocationIndex = sourceIndex;
-            target.collisionContactIsPlayer = false;
-            //0784 leaves source+5F untouched for mode3; target still receives contact.
-            if (!(playableLevel1 && source.stateBytes4dTo52[4] == skipSourceContactMode)) {
-                source.collisionContactAllocationIndex = targetIndex;
-                source.collisionContactIsPlayer = false;
-            }
-            sourceCollidedWithActor = true;
-            lastCollisionTargetType = target.type;
-            if(playableCampaignFrames_ && target.type==43) {lastBombSlot=level2EntityFixedPoolSlots_[targetIndex];}
-            if (
-                activeCampaignLevel_ == 1
-                &&
-                (source.type == 13 || source.type == 47)
-                && target.type == 47
-                && sourceActorSlot < level2ActorPoolSize_
-            ) {
-                // FUN_1000:0784 applies mutual Type-47 damage only while
-                // DS:51f4 is campaign index 1 (Level 2). Level 3's
-                // zero-radius guardian emissions may overlap exactly; they
-                // retain the contact but do not destroy one another.
-                sourceCollidedWithType47 = true;
-            }
-        }
-        if (sourceRemoval < level2Entities_.size()) {
-            break;
-        }
-        if (
-            sourceCollidedWithActor
-            && source.stateBytes4dTo52[4] != 3
-        ) {
-            // FUN_1000:0784 keeps the last contact returned by FUN_1000:0c0a.
-            // After FUN_1000:0e50 consumes presentation-state 1/5, the shared
-            // backout calls FUN_1000:3d10 when the last target is below Type
-            // 46 or the source is below Type 44. Type 13/47 and a Type-43
-            // target take their dedicated branches instead. This matters for
-            // the Level 3 loop-1194 Type-44/Type-44 overlap: only the later
-            // source actor loses its forward step.
-            if (source.stateBytes4dTo52[4] == 1) {
-                source.stateBytes4dTo52[5] = 4;
-                source.behaviorTimer = 0;
-            }
-            if(playableCampaignFrames_ && lastCollisionTargetType==43) {
-                const auto identity=campaignIdentity(sourceIndex);
-                auto shadow=source;
-                const auto points=playableBombContactScore(shadow.type);
-                if(activeCampaignLevel_==0 && shadow.stateBytes4dTo52[4]==5 && shadow.type!=7) {
-                    if(lastBombSlot>=level2FixedObjectPoolSize_) {
-                        throw std::logic_error("ADCC Bomb contact lost its physical FE owner");
-                    }
-                    const auto bombIdentity=level2ActorPoolSize_*3+lastBombSlot;
-                    const auto bombIndex=campaignIndex(bombIdentity);
-                    auto bomb=bombIndex<level2Entities_.size() ? level2Entities_[bombIndex] : level2FixedPool_[lastBombSlot];
-                    //0A0A/ADCC precedes source1176(10), even when A6BE's timer is nonzero.
-                    shadow.collisionContactAllocationIndex=fixedContactBase+lastBombSlot;
-                    level2Entities_[sourceIndex].collisionContactAllocationIndex=shadow.collisionContactAllocationIndex;
-                    campaignHit(bomb,20,bombIdentity);
-                    const auto liveBomb=campaignIndex(bombIdentity);
-                    if(liveBomb>=level2Entities_.size()) {level2FixedPool_[lastBombSlot].stateBytes4dTo52[1]=bomb.stateBytes4dTo52[1];}
-                }
-                //The target child may append effects or erase its compact FE view.
-                //campaignHit resolves this source afresh through its physical identity.
-                if(campaignHit(shadow,10,identity)) {level2Score_ += scaledCampaignAward(points);}
-                if(phase_==GameplayPhase::endingEntry) {return;}
-                //1176 can append effects/reward and erase compact entries; keep no vector reference.
-                continue;
-            }
-            if (
-                lastCollisionTargetType != 43
-                && source.type != 13
-                && source.type != 47
-                && (
-                    lastCollisionTargetType < 46
-                    || source.type < 44
-                )
-            ) {
-                reverseEntityTranslation(source);
-            }
-        }
-        if (sourceCollidedWithType47) {
-            level2Type47MutualHitActorSlots.push_back(sourceActorSlot);
-        }
-    }
-    if (sourceRemoval < level2Entities_.size()) {
-        level2PrefixGuards_.reset();
-        //04D8 calls0E7C for hostile shots; positive shielded calls return
-        //before its impact sound. Source-work receipts own their own audio.
-        if(playableCampaignFrames_&&level2EntityProjectilePoolSlots_[sourceRemoval]<level2ProjectilePoolSize_
-            &&level1_.systemTimers_[1]==0) {level2AudioEvents_.push_back({level2LoopTick_,6});}
-        level2PlayerArmor_ = playableCampaignFrames_
-            ? playableArmorAfterDamage(level2PlayerArmor_,static_cast<std::int16_t>(sourceRemovalPlayerDamage/4),
-                level1_.systemTimers_[1]!=0 ? PlayableShield::active : PlayableShield::inactive)
-            : static_cast<std::int16_t>(level2PlayerArmor_-sourceRemovalPlayerDamage);
-        if (
-            level2Entities_[sourceRemoval].type == 13
-            || level2Entities_[sourceRemoval].type == 47
-        ) {
-            recordDestruction(level2Entities_[sourceRemoval],level2Entities_[sourceRemoval].position,6);
-            // The native Level 2 OPL trace records two complete event-6
-            // dispatcher blocks on this loop-170 Type 13 collision path.
-            level2AudioEvents_.push_back({level2LoopTick_, 6});
-            level2AudioEvents_.push_back({level2LoopTick_, 6});
-            if (level2ActiveEnemyCount_ > 0) {
-                --level2ActiveEnemyCount_;
-            }
-            if (activeCampaignLevel_ == 4) {
-                level2Entities_[sourceRemoval].stateBytes4dTo52[1] = 0;
-                //0A06 replaces the previous actor contact with the player pointer.
-                level2Entities_[sourceRemoval].collisionContactAllocationIndex = static_cast<std::size_t>(-1);
-                level2Entities_[sourceRemoval].collisionContactIsPlayer = true;
-            }
-        }
-        removeLevel2Entity(sourceRemoval);
-    }
-    for (const auto actorSlot : level2Type47MutualHitActorSlots) {
-        const auto actor = std::find(
-            level2EntityActorPoolSlots_.begin(),
-            level2EntityActorPoolSlots_.end(),
-            actorSlot
-        );
-        if (actor == level2EntityActorPoolSlots_.end()) {
-            continue;
-        }
-        const auto actorIndex = static_cast<std::size_t>(
-            actor - level2EntityActorPoolSlots_.begin()
-        );
-        auto destroyed = level2Entities_[actorIndex];
-        destroyed.stateBytes4dTo52[1] = 0;
-        const auto distanceBucket = std::min<std::uint32_t>(
-            destroyed.presenterDistance / 0x1964U,
-            5U
-        );
-        spawnLevel2TransientEffect(
-            destroyed,
-            static_cast<std::uint8_t>(distanceBucket * 3U + 15U),
-            static_cast<std::uint8_t>(distanceBucket * 3U + 17U)
-        );
-        level2AudioEvents_.push_back({level2LoopTick_, 6});
-        if (
-            destroyed.stateBytes4dTo52[0] == 0xff
-            && level2ActiveEnemyCount_ > 0
-        ) {
-            --level2ActiveEnemyCount_;
-        }
-        removeLevel2Entity(actorIndex);
+    if (resolveCampaignActorContacts(contactStart, contactMotion, combat) == CampaignContactFlow::suspendFrame) {
+        return;
     }
     if (resuming) {
         //Inactive025A skips9298 and every presenter callback after0784.
@@ -4456,292 +2937,10 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
     auto retireCompletionObject = static_cast<std::size_t>(-1);
     auto spawnGuardianType48 = false;
     auto spawnGuardianType47 = false;
-    auto spawnLevel3Type47Burst = std::uint8_t{0};
+    std::optional<Level1Entity> level3Burst;
     Level1Entity postWaveSource{};
     Level1Entity guardianType48Source{};
-    Level1Entity level3Type47BurstSource{};
-    const auto applyLevel2GroundRidingVelocity = [this,&behaviorTarget](
-        Level1Entity& entity
-    ) noexcept {
-        // FUN_1000:9a34 steers Type 13 and the settled Type 47 form toward
-        // the player. Outside the 2000-unit axis corridor it selects signed
-        // level-speed components directly; inside it uses target heading.
-        const auto deltaX = static_cast<std::int64_t>(entity.position.x)
-            - behaviorTarget.position.x;
-        const auto deltaY = static_cast<std::int64_t>(entity.position.y)
-            - behaviorTarget.position.y;
-        entity.xVelocity = deltaX < 0 ? 112 : -112;
-        entity.yVelocity = deltaY < 0 ? 112 : -112;
-        const auto magnitude = [](const std::int64_t value) noexcept {
-            return value < 0 ? -value : value;
-        };
-        if (magnitude(deltaX) <= 1999 || magnitude(deltaY) <= 1999) {
-            Level1Entity headingVelocity{};
-            headingVelocity.yaw = entity.targetHeading;
-            headingVelocity.forwardVelocity = 224;
-            advanceEntityKinematics(headingVelocity);
-            entity.xVelocity = static_cast<std::int16_t>(
-                headingVelocity.position.x
-            );
-            entity.yVelocity = static_cast<std::int16_t>(
-                headingVelocity.position.y
-            );
-        }
-    };
-    const auto advanceLevel2Type48Behavior = [this](
-        Level1Entity& entity
-    ) noexcept {
-        if (entity.position.z > 0) {
-            entity.position.z -= 50;
-        }
-        if (entity.behaviorTimer != 0) {
-            --entity.behaviorTimer;
-            if (static_cast<std::int8_t>(entity.behaviorTimer) <= 12) {
-                entity.stateBytes4dTo52[2] = static_cast<std::uint8_t>(
-                    13 - static_cast<std::int8_t>(entity.behaviorTimer)
-                );
-            }
-        } else {
-            entity.type = 47;
-            if (entity.renderProfile != WorldActorRenderProfile::inlineSelectorNoCallback) {
-                entity.renderProfile = WorldActorRenderProfile::unknown;
-            }
-            entity.behaviorTimer = 60;
-            entity.forwardVelocity = 100;
-            entity.yaw = level2Rng_.next();
-        }
-    };
-    const auto advanceLevel2Type13Behavior = [this, &applyLevel2GroundRidingVelocity](Level1Entity& entity) {
-        if (entity.collisionContactIsPlayer) {
-            return;
-        }
-        if (entity.collisionContactAllocationIndex < level2Entities_.size()) {
-            const auto& contact = level2Entities_[entity.collisionContactAllocationIndex];
-            if (contact.type != 13) {
-                entity.position.z = std::min<std::int32_t>(1000, entity.position.z + 45);
-                entity.collisionContactAllocationIndex = static_cast<std::size_t>(-1);
-            }
-            return;
-        }
-        applyLevel2GroundRidingVelocity(entity);
-        entity.position.z = std::max<std::int32_t>(0, entity.position.z - 45);
-    };
     bool guardianAllocatedThisBoundary = false;
-    const auto advancePhysicalLevel2Guardian = [this, &behaviorTarget, &level2GuardianRetiredContact,
-        &guardianAllocatedThisBoundary](const std::size_t slot) {
-        const auto live = std::find(level2EntityActorPoolSlots_.begin(), level2EntityActorPoolSlots_.end(), slot);
-        const auto index = static_cast<std::size_t>(live - level2EntityActorPoolSlots_.begin());
-        auto actor = live == level2EntityActorPoolSlots_.end() ? level2ActorPool_[slot] : level2Entities_[index];
-        refreshPlayableTarget(actor, behaviorTarget);
-        Level2GuardianBehaviorInput input{actor, level2Rng_, level2CompletionObjectIndex_ != static_cast<std::size_t>(-1)};
-        input.retainedContactPresent = level2GuardianRetiredContact[slot];
-        const auto work = level2GuardianBehaviorOperations(input);
-        level2Rng_ = work.rng;
-        level2ActorPool_[slot] = work.actor;
-        if (live != level2EntityActorPoolSlots_.end()) {
-            level2Entities_[index] = work.actor;
-        }
-        if (!work.emission) {
-            return;
-        }
-        if (*work.emission == Level2GuardianEmission::pulse46) {
-            constexpr std::size_t pulseType = 46;
-            constexpr std::uint32_t pulseRadius = 2260;
-            if (!campaignModelsBound_ || campaignModels_[pulseType].radius != pulseRadius
-                || campaignModels_[pulseType].selectors != 0) {
-                throw std::invalid_argument("Level2 pulse requires its decoded selectorless model46");
-            }
-            for (std::size_t fixed = 0; fixed < level2FixedObjectPoolSize_; ++fixed) {
-                if (!level2FixedPoolKnown_[fixed]) {
-                    throw std::invalid_argument("Level2 pulse reached unknown fixed-record storage");
-                }
-                if (level2FixedPool_[fixed].active()) {
-                    continue;
-                }
-                const auto profile = level2FixedPool_[fixed].renderProfile;
-                if (profile != WorldActorRenderProfile::noHandles && profile != WorldActorRenderProfile::inlineSelectorNoCallback) {
-                    throw std::invalid_argument("Level2 pulse requires a known callback-free fixed record");
-                }
-                break;
-            }
-            Level1Entity request{};
-            request.type = pulseType;
-            request.collisionRadius = pulseRadius;
-            const auto pulse = allocateLevel2FixedObject(request);
-            if (pulse < level2Entities_.size()) {
-                guardianAllocatedThisBoundary = true;
-                level2Entities_[pulse].position = work.actor.position;
-                level2FixedPool_[level2EntityFixedPoolSlots_[pulse]] = level2Entities_[pulse];
-            }
-            return;
-        }
-        const auto free = std::find(level2ActorPoolActive_.begin(), level2ActorPoolActive_.end(), false);
-        if (free == level2ActorPoolActive_.end()) {
-            return;
-        }
-        const auto birthSlot = static_cast<std::size_t>(free - level2ActorPoolActive_.begin());
-        if (!playableOrdinaryConstructor_ || (level2ActorIncarnations_[birthSlot] != 0
-            && level2ActorPool_[birthSlot].renderProfile == WorldActorRenderProfile::unknown)) {
-            throw std::invalid_argument("Level2 AE10 requires its shared constructor and known prior selector");
-        }
-        //4370 resets the canonical slot before AE10 reads its source, including self-aliases.
-        const auto birth = allocateLevel2Actor(playableOrdinaryConstructor_->construct(13, level2Rng_),
-            ActorInitialization::validatedOrdinary);
-        guardianAllocatedThisBoundary = true;
-        const auto origin = level2ActorPool_[slot];
-        auto& emitted = level2Entities_[birth];
-        emitted.position = origin.position;
-        emitted.position.z = static_cast<std::int32_t>(static_cast<std::uint32_t>(emitted.position.z) + 500U);
-        emitted.pitch = origin.pitch;
-        emitted.roll = 0;
-        emitted.yaw = origin.yaw;
-        emitted.type = 48;
-        emitted.forwardVelocity = emitted.yawVelocity = 0;
-        emitted.behaviorTimer = nextLevel2VisualRandomByte();
-        emitted.renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
-        emitted.animatedModelPresenterEnabled = false;
-        level2ActorPool_[birthSlot] = emitted;
-        ++level2ActiveEnemyCount_;
-        ++level2SpawnedEnemyCount_;
-    };
-    const auto advanceLevel5Type11Behavior = [this,&behaviorTarget](Level1Entity& actor, const std::size_t ownerSlot) {
-        actor.stateBytes4dTo52[5] = advanceType11Behavior(actor, behaviorTarget, level2Rng_,
-            [this, ownerSlot](Level1Entity& current) {
-                return fireLevel2EnemyProjectile(current, ownerSlot, 0);
-            });
-    };
-    const auto advanceLevel5GroundBehavior = [this](Level1Entity& actor, const std::size_t ownerSlot) {
-        const auto fire = [this, ownerSlot](Level1Entity& current) {
-            return fireLevel2EnemyProjectile(current, ownerSlot, -1);
-        };
-        if (actor.type == 5) {
-            advanceType5Behavior(actor, level2Rng_, static_cast<std::uint16_t>(activeCampaignLevel_ + 1), fire);
-        } else {
-            advanceType8Behavior(actor, fire);
-        }
-    };
-    const auto advanceLevel5Guardian = [this](Level1Entity& actor, const std::size_t ownerSlot) {
-        const auto sourceTick = static_cast<std::uint16_t>(level2LoopTick_ - 1);
-        advanceLevel5GuardianBehavior(actor, sourceTick, [this, ownerSlot](auto& owner) {
-            if (std::find(level2ProjectilePoolActive_.begin(), level2ProjectilePoolActive_.end(), false)
-                == level2ProjectilePoolActive_.end()) {
-                throw std::invalid_argument("Level5 ACEC requires a free projectile record");
-            }
-            fireLevel2EnemyProjectile(owner, ownerSlot, 0);
-        });
-    };
-    const auto advanceCampaignGuardian = [this, &campaignHit, &campaignIndex, &campaignIdentity,
-        &removeLevel2Entity, &level2ActiveIdentitiesAtStart, fixedContactBase](Level1Entity& actor, const std::size_t ownerSlot) {
-        CampaignGuardianContext context{};
-        context.playerPosition = level2Player_.position;
-        context.playerProxyPosition = &campaignPlayerProxy_.position;
-        context.level6Turn = &level6GuardianTurn_;
-        context.craftPresent = level2CompletionObjectIndex_ != static_cast<std::size_t>(-1);
-        for (const auto identity : level2ActiveIdentitiesAtStart) {
-            if (identity.pool != 1) { continue; }
-            const auto index = campaignIndex(level2ActorPoolSize_ + identity.slot);
-            context.inheritedProjectiles.push_back({identity.slot,
-                index < level2Entities_.size() ? level2Entities_[index] : level2ProjectilePool_[identity.slot]});
-        }
-        if (actor.collisionContactIsPlayer) {
-            context.contact = CampaignGuardianContact{static_cast<std::size_t>(-1), 0, true};
-        } else if (actor.collisionContactAllocationIndex>=fixedContactBase
-            && actor.collisionContactAllocationIndex-fixedContactBase<level2FixedObjectPoolSize_) {
-            const auto slot=actor.collisionContactAllocationIndex-fixedContactBase;
-            context.contact=CampaignGuardianContact{level2ActorPoolSize_*3+slot,level2FixedPool_[slot].type,false};
-        } else if (actor.collisionContactAllocationIndex < level2Entities_.size()) {
-            const auto contact = actor.collisionContactAllocationIndex;
-            context.contact = CampaignGuardianContact{campaignIdentity(contact), level2Entities_[contact].type, false};
-        }
-        CampaignGuardianCallbacks callbacks{};
-        callbacks.damageGuardian = [&](Level1Entity& shadow, const std::uint8_t amount) {
-            campaignHit(shadow, amount, ownerSlot);
-        };
-        callbacks.retireProjectile = [&](const std::size_t slot) {
-            const auto index = campaignIndex(level2ActorPoolSize_ + slot);
-            if (index < level2Entities_.size()) {
-                removeLevel2Entity(index);
-            } else {
-                level2ProjectilePool_[slot].stateBytes4dTo52[1] = 0;
-                level2ProjectilePoolActive_[slot] = false;
-            }
-        };
-        callbacks.damageContact = [&](const CampaignGuardianContact& contact, const std::uint8_t amount) {
-            if (contact.player) {
-                auto proxy = level2Player_;
-                campaignHit(proxy, amount, static_cast<std::size_t>(-1));
-                level2Player_.stateBytes4dTo52[1] = proxy.stateBytes4dTo52[1];
-                return;
-            }
-            const auto index = campaignIndex(contact.identity);
-            if (index >= level2Entities_.size()) {
-                const auto kind=contact.identity/level2ActorPoolSize_;
-                const auto slot=contact.identity%level2ActorPoolSize_;
-                if(kind!=3 || slot>=level2FixedObjectPoolSize_ || !level2FixedPoolKnown_[slot]
-                    || level2FixedPool_[slot].type!=43) {
-                    throw std::invalid_argument("guardian hit lost its retained physical contact");
-                }
-                auto shadow=level2FixedPool_[slot];
-                campaignHit(shadow,amount,contact.identity);
-                level2FixedPool_[slot].stateBytes4dTo52[1]=shadow.stateBytes4dTo52[1];
-                return;
-            }
-            auto shadow = level2Entities_[index];
-            campaignHit(shadow, amount, contact.identity);
-        };
-        callbacks.changePlayerArmor = [&](const std::int16_t delta) {
-            level2AudioEvents_.push_back({level2LoopTick_, 6});
-            level2PlayerArmor_ = static_cast<std::int16_t>(level2PlayerArmor_ + delta);
-        };
-        callbacks.attack = [&](const Level1Entity& owner, const CampaignGuardianAttack attack) {
-            if (attack == CampaignGuardianAttack::aimedProjectile || attack == CampaignGuardianAttack::volleyProjectile80) {
-                auto shadow = owner;
-                return fireLevel2EnemyProjectile(shadow, ownerSlot, -1);
-            }
-            if (attack == CampaignGuardianAttack::pulse46) {
-                Level1Entity request{};
-                request.type = 46;
-                request.collisionRadius = campaignModels_[46].radius;
-                const auto index = allocateLevel2FixedObject(request);
-                if (index >= level2Entities_.size()) { return false; }
-                auto& pulse = level2Entities_[index];
-                pulse.position = owner.position;
-                level2FixedPool_[level2EntityFixedPoolSlots_[index]] = pulse;
-                return true;
-            }
-            if (std::find(level2ActorPoolActive_.begin(), level2ActorPoolActive_.end(), false)
-                == level2ActorPoolActive_.end()) { return false; }
-            if (!playableOrdinaryConstructor_) {
-                throw std::invalid_argument("AE10 requires the retained shared Type13 constructor");
-            }
-            auto emitted = playableOrdinaryConstructor_->construct(13, level2Rng_);
-            emitted.position = owner.position;
-            emitted.position.z += 500;
-            emitted.pitch = owner.pitch;
-            emitted.roll = 0;
-            emitted.yaw = owner.yaw;
-            emitted.type = 48;
-            emitted.forwardVelocity = emitted.yawVelocity = 0;
-            emitted.behaviorTimer = nextLevel2VisualRandomByte();
-            emitted.renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
-            emitted.animatedModelPresenterEnabled = false;
-            const auto index = allocateLevel2Actor(emitted, ActorInitialization::validatedOrdinary);
-            if (index >= level2Entities_.size()) { return false; }
-            ++level2ActiveEnemyCount_;
-            ++level2SpawnedEnemyCount_;
-            return true;
-        };
-        const auto family = activeCampaignLevel_ == 0 ? CampaignGuardianFamily::level1
-            : activeCampaignLevel_ == 3 ? CampaignGuardianFamily::level4
-            : activeCampaignLevel_ == 5 ? CampaignGuardianFamily::level6 : CampaignGuardianFamily::level7;
-        advanceCampaignGuardianBehavior(actor, family, level2Rng_, context, callbacks);
-        const auto live = campaignIndex(ownerSlot);
-        if (live < level2Entities_.size()) {
-            actor.allocationIndex = live;
-            level2Entities_[live] = actor;
-        }
-        level2ActorPool_[ownerSlot] = actor;
-    };
     const auto behaviorCount = activeCampaignLevel_ == 4 || campaignGuardians || physicalLevel2Guardian
         ? level2ActiveIdentitiesAtStart.size() : behaviorOrder.size();
     for (std::size_t position = 0; position < behaviorCount; ++position) {
@@ -4770,10 +2969,10 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                 auto& retired = level2ActorPool_[identity.slot];
                 if (physicalLevel2Guardian) {
                     if (retired.type == 44 || retired.type == 45) {
-                        advancePhysicalLevel2Guardian(identity.slot);
+                        advancePhysicalLevel2Guardian(identity.slot, behaviorTarget, projectileContact, guardianAllocatedThisBoundary);
                     } else if (retired.type == 48) {
                         refreshPlayableTarget(retired, behaviorTarget);
-                        advanceLevel2Type48Behavior(retired);
+                        advanceCampaignType48(retired);
                     }
                     continue;
                 }
@@ -4783,29 +2982,23 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                         auto shadow = retired;
                         shadow.presenterDistance = approximatePlanarDistance(behaviorTarget.position, shadow.position);
                         shadow.targetHeading = presenterTargetHeading(shadow.position, behaviorTarget.position);
-                        advanceCampaignGuardian(shadow, identity.slot);
+                        advanceCampaignGuardian(shadow, identity.slot, level2ActiveIdentitiesAtStart, combat);
                     } else if (retired.type == 11 || retired.type == 5 || retired.type == 8) {
                         retired.presenterDistance = approximatePlanarDistance(behaviorTarget.position, retired.position);
                         retired.targetHeading = presenterTargetHeading(retired.position, behaviorTarget.position);
-                        if (retired.type == 11) {
-                            advanceLevel5Type11Behavior(retired, identity.slot);
-                        } else {
-                            advanceLevel5GroundBehavior(retired, identity.slot);
-                        }
+                        advanceCampaignOrdinaryWithFire(retired, identity.slot, behaviorTarget);
                     }
                     continue;
                 }
                 retired.presenterDistance = approximatePlanarDistance(behaviorTarget.position, retired.position);
                 retired.targetHeading = presenterTargetHeading(retired.position, behaviorTarget.position);
-                if (retired.type == 11) {
-                    advanceLevel5Type11Behavior(retired, identity.slot);
-                } else if (retired.type == 5 || retired.type == 8) {
-                    advanceLevel5GroundBehavior(retired, identity.slot);
+                if (retired.type == 11 || retired.type == 5 || retired.type == 8) {
+                    advanceCampaignOrdinaryWithFire(retired, identity.slot, behaviorTarget);
                 } else if (retired.type == 13) {
                     if (retired.collisionContactAllocationIndex != static_cast<std::size_t>(-1)) {
                         throw std::invalid_argument("Level5 removed Type13 contact requires retained pointer identity");
                     }
-                    advanceLevel2Type13Behavior(retired);
+                    advanceCampaignType13(retired, behaviorTarget);
                 } else if (retired.type == 44) {
                     advanceLevel5Guardian(retired, identity.slot);
                 } else {
@@ -4934,7 +3127,7 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         }
         if (entity.type == 47 || entity.type == 48) {
             if (entity.type == 48) {
-                advanceLevel2Type48Behavior(entity);
+                advanceCampaignType48(entity);
                 continue;
             }
             if (entity.position.z > 0) {
@@ -4954,13 +3147,13 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                     if(entity.stateBytes4dTo52[2]==0) {stride^=alternateStride;}
                     entity.presentationModelAnimationVariant=static_cast<std::uint8_t>(stride|entity.stateBytes4dTo52[2]);
                 }
-                applyLevel2GroundRidingVelocity(entity);
+                applyCampaignGroundRidingVelocity(entity, behaviorTarget);
             }
             continue;
         }
         if (entity.type == 44 || entity.type == 45) {
             if (physicalLevel2Guardian) {
-                advancePhysicalLevel2Guardian(level2EntityActorPoolSlots_[index]);
+                advancePhysicalLevel2Guardian(level2EntityActorPoolSlots_[index], behaviorTarget, projectileContact, guardianAllocatedThisBoundary);
                 continue;
             }
             if (campaignGuardians) {
@@ -4969,7 +3162,7 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                 }
                 const auto ownerSlot = level2EntityActorPoolSlots_[index];
                 auto shadow = entity;
-                advanceCampaignGuardian(shadow, ownerSlot);
+                advanceCampaignGuardian(shadow, ownerSlot, level2ActiveIdentitiesAtStart, combat);
                 continue;
             }
             if (activeCampaignLevel_ == 0 || activeCampaignLevel_ == 3 || activeCampaignLevel_ == 5 || activeCampaignLevel_ == 6) {
@@ -4987,160 +3180,9 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                 continue;
             }
             if (activeCampaignLevel_ == 2) {
-                // Level 3 selects FUN_1000:a50e rather than the Level 2
-                // a92e guardian callback.  The native routine keeps the
-                // Type-44 record in place while its four-state descent/
-                // retreat machine runs; state 1 emits two Type-47 records
-                // when its timer crosses ten with no completion object.
-                const auto choice = level2Rng_.next();
-                auto& behavior = entity.stateBytes4dTo52[5];
-                const auto headingDifference = static_cast<std::int16_t>(
-                    entity.targetHeading - entity.yaw
-                );
-                const auto headingMagnitude = static_cast<std::int16_t>(
-                    headingDifference
-                        == std::numeric_limits<std::int16_t>::min()
-                    ? std::numeric_limits<std::int16_t>::min()
-                    : std::abs(static_cast<int>(headingDifference))
-                );
-                const auto steer = [&entity](
-                    const std::int16_t difference,
-                    const std::int16_t limit
-                ) noexcept {
-                    // FUN_1000:ac3a canonicalizes the otherwise ambiguous
-                    // signed half-turn 0x8000 to +0x7fff before applying the
-                    // steering limit.
-                    const auto canonicalDifference = difference
-                            == std::numeric_limits<std::int16_t>::min()
-                        ? static_cast<std::int32_t>(
-                            std::numeric_limits<std::int16_t>::max()
-                        )
-                        : static_cast<std::int32_t>(difference);
-                    const auto bounded = std::clamp<std::int32_t>(
-                        canonicalDifference,
-                        -limit,
-                        limit
-                    );
-                    entity.yawVelocity = static_cast<std::int16_t>(bounded);
-                    // FUN_1000:ac3a damps the roll accumulator toward the
-                    // selected steering speed while the object is above
-                    // the ground threshold.
-                    if (entity.position.z > 499) {
-                        const auto roll = static_cast<std::int16_t>(
-                            entity.roll
-                        );
-                        entity.roll = static_cast<std::uint16_t>(
-                            roll + (-(bounded * 16 + roll) >> 4)
-                        );
-                    }
-                };
-                if (behavior == 0) {
-                    entity.animatedModelPresenterEnabled = false; //A542 clears source+1A.
-                    entity.renderProfile = WorldActorRenderProfile::heapSelectorNoCallback;
-                    const auto launchGateOpen =
-                        entity.position.z > 0x833
-                        && choice > 199U
-                        && entity.collisionContactAllocationIndex
-                            == static_cast<std::size_t>(-1)
-                        && !entity.collisionContactIsPlayer;
-                    if (launchGateOpen) {
-                        entity.position.z = 0x834;
-                        steer(headingDifference, 0x200);
-                        entity.forwardVelocity = 300;
-                        if (
-                            headingMagnitude < 0x200
-                            && entity.presenterDistance > 4000U
-                        ) {
-                            behavior = 1;
-                        } else if (headingMagnitude < 0x200) {
-                            behavior = 2;
-                        }
-                    } else {
-                        // FUN_1000:a50e falls through from state 0 to state 2
-                        // when its launch gate is closed (including a live
-                        // contact record). A large heading error is the one
-                        // native path that retains state 0 after the launch
-                        // record has been initialized.
-                        behavior = 2;
-                    }
-                } else if (behavior == 1) {
-                    steer(headingDifference, 0x200);
-                    if (entity.position.z > 500) {
-                        entity.position.z = std::max(
-                            0,
-                            entity.position.z - 100
-                        );
-                        if (
-                            entity.position.z < 501
-                            && headingMagnitude < 200
-                        ) {
-                            entity.behaviorTimer = 20;
-                        } else if (entity.position.z < 501) {
-                            behavior = 2;
-                            entity.behaviorTimer = 0;
-                        }
-                    } else {
-                        --entity.behaviorTimer;
-                        if (
-                            entity.behaviorTimer == 10
-                            && level2CompletionObjectIndex_
-                                == static_cast<std::size_t>(-1)
-                        ) {
-                            spawnLevel3Type47Burst = 2;
-                            level3Type47BurstSource = entity;
-                        } else if (
-                            entity.behaviorTimer == 0
-                            || entity.collisionContactAllocationIndex
-                                != static_cast<std::size_t>(-1)
-                            || entity.collisionContactIsPlayer
-                        ) {
-                            // FUN_1000:a50e retains the timer-10 emission
-                            // return, but every other live contact falls
-                            // through from the state-1 hold into state 2.
-                            behavior = 2;
-                        }
-                    }
-                } else if (behavior == 2) {
-                    if (entity.behaviorTimer != 0) {
-                        --entity.behaviorTimer;
-                    } else if (entity.position.z < 0x834) {
-                        // FUN_1000:a50e clears the contact word before the
-                        // zero-timer return climb.
-                        entity.collisionContactAllocationIndex =
-                            static_cast<std::size_t>(-1);
-                        entity.collisionContactIsPlayer = false;
-                        entity.position.z = std::min(
-                            0x834,
-                            entity.position.z + 100
-                        );
-                    } else {
-                        entity.collisionContactAllocationIndex =
-                            static_cast<std::size_t>(-1);
-                        entity.collisionContactIsPlayer = false;
-                        behavior = 3;
-                    }
-                } else if (behavior == 3) {
-                    steer(
-                        static_cast<std::int16_t>(
-                            headingDifference + 0x8000
-                        ),
-                        200
-                    );
-                    entity.forwardVelocity = 300;
-                    if (entity.presenterDistance > 16000U) {
-                        behavior = 0;
-                    }
+                if (auto burst = advanceLevel3Guardian(entity)) {
+                    level3Burst = std::move(burst);
                 }
-                // FUN_1000:a50e stores a triangular model selector through
-                // the +1c presentation pointer: 5 - abs((timer >> 1) - 5).
-                // The earlier absolute-value-only form inverted this cycle
-                // at the native timer-10 emission boundary.
-                const auto animationDistance = std::abs(
-                    static_cast<int>(entity.behaviorTimer) / 2 - 5
-                );
-                const auto animation = std::max(0, 5 - animationDistance);
-                entity.modelAnimationVariant = static_cast<std::uint8_t>(animation);
-                entity.presentationModelAnimationVariant = entity.modelAnimationVariant;
                 continue;
             }
             const auto choice = level2Rng_.next();
@@ -5246,201 +3288,12 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             continue;
         }
         if (entity.type == 12) {
-            // FUN_1000:952c is the Level 3 Type 12 callback.  Its first
-            // state is the only part reached by the original neutral route,
-            // but the complete bounded state machine is kept here so later
-            // Level 3 probes do not silently fall through to the generic
-            // Type 1-4 callback.
-            auto behavior = entity.stateBytes4dTo52[5];
-            const auto callbackActorSlot = level2EntityActorPoolSlots_[index];
-            // The native callback consumes the shared contact word before
-            // dispatching the state table. The portable model stores that
-            // word as either of these two fields.
-            if (
-                entity.collisionContactAllocationIndex
-                    != static_cast<std::size_t>(-1)
-                || entity.collisionContactIsPlayer
-            ) {
-                entity.collisionContactAllocationIndex =
-                    static_cast<std::size_t>(-1);
-                entity.collisionContactIsPlayer = false;
-                behavior = 5;
-            }
-            if (behavior == 0) {
-                if (entity.behaviorTimer == 0) {
-                    // FUN_1000:9571 loads A00[type] into forward velocity,
-                    // then FUN_1000:9842 selects the signed packed yaw
-                    // velocity from A44[type] and retains its high-byte
-                    // timer. Level 3 Type 12 has A00=360 and A44=2.
-                    entity.forwardVelocity = 360;
-                    const auto choice = level2Rng_.next();
-                    if (static_cast<std::uint8_t>(choice) < 90) {
-                        entity.yawVelocity = 0;
-                    } else {
-                        const auto remainder = static_cast<std::uint16_t>(
-                            choice % static_cast<std::uint16_t>(2U << 7U)
-                        );
-                        auto yawVelocity = static_cast<std::int16_t>(
-                            static_cast<std::uint16_t>(
-                                static_cast<std::uint16_t>(
-                                    static_cast<std::uint8_t>(
-                                        (remainder >> 8U) + 1U
-                                    )
-                                ) << 8U
-                            ) | static_cast<std::uint8_t>(remainder)
-                        );
-                        if ((choice & 0x0100U) != 0) {
-                            yawVelocity = static_cast<std::int16_t>(
-                                -yawVelocity
-                            );
-                        }
-                        entity.yawVelocity = yawVelocity;
-                    }
-                    entity.behaviorTimer = static_cast<std::uint8_t>(
-                        (choice >> 8U) & 0x7FU
-                    );
-                } else {
-                    --entity.behaviorTimer;
-                    if (entity.behaviorTimer == 0) {
-                        behavior = 1;
-                    }
-                }
-            } else if (behavior == 1) {
-                const auto difference = static_cast<std::int16_t>(
-                    entity.targetHeading - entity.yaw
-                );
-                entity.yawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(difference, -0x10f, 0x10f)
-                );
-                if (
-                    static_cast<std::uint8_t>(level2Rng_.next()) < 8
-                ) {
-                    behavior = 2;
-                }
-            } else if (behavior == 2) {
-                entity.position.z -= 50;
-                if (entity.position.z < 200) {
-                    behavior = 3;
-                }
-            } else if (behavior == 3) {
-                const auto difference = static_cast<std::int16_t>(
-                    entity.targetHeading - entity.yaw
-                );
-                entity.yawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(difference, -0x10f, 0x10f)
-                );
-                const auto insideAttackRange = entity.position.z < 0
-                    || entity.presenterDistance <= 0x6000U;
-                // FUN_1000:98dc gates the attack path before either the
-                // weapon-slot timer or the heading test. A held slot timer
-                // therefore suppresses the miss gate as well.
-                if (
-                    insideAttackRange
-                    && entity.weaponSlotTimers[0] == 0
-                ) {
-                    const auto headingDifference = static_cast<std::int32_t>(
-                        static_cast<std::int16_t>(
-                            entity.targetHeading - entity.yaw
-                        )
-                    );
-                    const auto headingMagnitude = headingDifference < 0
-                        ? -headingDifference
-                        : headingDifference;
-                    if (headingMagnitude < 0x100) {
-                        if (fireLevel2EnemyProjectile(index, 0)) {
-                            behavior = 4;
-                            // Projectile insertion can precede this actor in
-                            // the portable vector. Re-find the owner by its
-                            // stable native actor-pool slot after insertion.
-                            const auto owner = std::find(
-                                level2EntityActorPoolSlots_.begin(),
-                                level2EntityActorPoolSlots_.end(),
-                                callbackActorSlot
-                            );
-                            if (owner != level2EntityActorPoolSlots_.end()) {
-                                level2Entities_[static_cast<std::size_t>(
-                                    owner - level2EntityActorPoolSlots_.begin()
-                                )].behaviorTimer = 0x3f;
-                            }
-                        }
-                    } else if (entity.type12MissGate < 2) {
-                        // Native 1000:9616 sends only the retained low-byte
-                        // values 0 and 1 to the altitude-return state.
-                        behavior = 5;
-                    }
-                }
-            } else if (behavior == 4) {
-                if (entity.behaviorTimer != 0) {
-                    --entity.behaviorTimer;
-                } else {
-                    behavior = 5;
-                }
-            } else if (behavior == 5) {
-                // The native signed high-word tests leave values already
-                // above 1000 untouched; values at or below 1000 rise by 100
-                // and clamp to exactly 1000 before returning to state 0.
-                if (entity.position.z <= 1000) {
-                    entity.position.z += 100;
-                    if (entity.position.z >= 1000) {
-                        entity.position.z = 1000;
-                        behavior = 0;
-                    }
-                }
-            }
-            auto callbackEntityIndex = index;
-            if (
-                callbackEntityIndex >= level2Entities_.size()
-                || level2EntityActorPoolSlots_[callbackEntityIndex]
-                    != callbackActorSlot
-            ) {
-                const auto owner = std::find(
-                    level2EntityActorPoolSlots_.begin(),
-                    level2EntityActorPoolSlots_.end(),
-                    callbackActorSlot
-                );
-                if (owner == level2EntityActorPoolSlots_.end()) {
-                    continue;
-                }
-                callbackEntityIndex = static_cast<std::size_t>(
-                    owner - level2EntityActorPoolSlots_.begin()
-                );
-            }
-            auto& callbackEntity = level2Entities_[callbackEntityIndex];
-            callbackEntity.stateBytes4dTo52[5] = behavior;
-            // 1000:966e is shared by every Type 12 state path. It decrements
-            // the first weapon-slot timer and applies the signed 16-bit roll
-            // damping generated by the native assembly at 1000:9677.
-            if (callbackEntity.weaponSlotTimers[0] != 0) {
-                --callbackEntity.weaponSlotTimers[0];
-            }
-            const auto rollInput = static_cast<std::int16_t>(
-                static_cast<std::uint16_t>(
-                    static_cast<std::uint16_t>(callbackEntity.yawVelocity)
-                        << 4U
-                )
-                    + callbackEntity.roll
-            );
-            const auto rollDelta = arithmeticShiftRightFour(-rollInput);
-            callbackEntity.roll = static_cast<std::uint16_t>(
-                static_cast<std::uint16_t>(callbackEntity.roll) + rollDelta
-            );
+            advanceCampaignType12(index);
             continue;
         }
         if ((activeCampaignLevel_ == 4 || playableCampaignFrames_)
             && (entity.type == 11 || entity.type == 5 || entity.type == 8)) {
-            const auto ownerSlot = level2EntityActorPoolSlots_[index];
-            auto actor = entity;
-            if (actor.type == 11) {
-                advanceLevel5Type11Behavior(actor, ownerSlot);
-            } else {
-                advanceLevel5GroundBehavior(actor, ownerSlot);
-            }
-            const auto owner = std::find(level2EntityActorPoolSlots_.begin(),
-                level2EntityActorPoolSlots_.end(), ownerSlot);
-            if (owner == level2EntityActorPoolSlots_.end()) {
-                throw std::logic_error("Type11 behavior lost its ordinary owner");
-            }
-            level2Entities_[static_cast<std::size_t>(owner - level2EntityActorPoolSlots_.begin())] = actor;
+            advanceLiveCampaignOrdinary(index, behaviorTarget);
             continue;
         }
         if (entity.type >= 1 && entity.type <= 5) {
@@ -5630,147 +3483,21 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             continue;
         }
         if (playableCampaignFrames_ && entity.type == 6) {
-            const auto ownerSlot=level2EntityActorPoolSlots_[index];
-            auto actor=entity;
-            advanceType6Behavior(actor,level2Rng_,{actor.type6CloakTimer,
-                static_cast<std::uint8_t>(activeCampaignLevel_),
-                    playableCampaignFrames_ && level1_.systemTimers_[4]!=0
-                        ? Type6ScannerState::active : Type6ScannerState::inactive},
-                [this,ownerSlot](auto& owner) { return fireLevel2EnemyProjectile(owner,ownerSlot,-1); });
-            const auto owner=std::find(level2EntityActorPoolSlots_.begin(),level2EntityActorPoolSlots_.end(),ownerSlot);
-            if (owner==level2EntityActorPoolSlots_.end()) {
-                throw std::logic_error("Type6 behavior lost its physical owner");
-            }
-            level2Entities_[static_cast<std::size_t>(owner-level2EntityActorPoolSlots_.begin())]=actor;
+            advanceCampaignType6(index);
             continue;
         }
         if (playableCampaignFrames_ && entity.type == 9) {
-            const auto ownerSlot = level2EntityActorPoolSlots_[index];
-            auto current = entity;
-            advanceType9Behavior(current,[this,ownerSlot](Level1Entity& owner) {
-                return fireLevel2EnemyProjectile(owner,ownerSlot,-1);
-            });
-            const auto owner = std::find(level2EntityActorPoolSlots_.begin(),level2EntityActorPoolSlots_.end(),ownerSlot);
-            if (owner == level2EntityActorPoolSlots_.end()) {
-                throw std::logic_error("Type9 fire lost its physical owner");
-            }
-            level2Entities_[static_cast<std::size_t>(owner-level2EntityActorPoolSlots_.begin())] = current;
+            advanceCampaignType9(index);
             continue;
         }
         if (entity.type == 10) {
-            auto behavior = entity.stateBytes4dTo52[5];
-            const auto turnMagnitude = static_cast<std::uint16_t>(
-                entity.yawVelocity < 0
-                    ? -static_cast<std::int32_t>(entity.yawVelocity)
-                    : entity.yawVelocity
-            );
-            const auto turnTicks = static_cast<std::uint8_t>(
-                turnMagnitude == 0 ? 0 : 0x2000U / turnMagnitude
-            );
-            if (behavior == 0) {
-                const auto difference = static_cast<std::int16_t>(
-                    entity.targetHeading - entity.yaw
-                );
-                const auto magnitude = difference < 0
-                    ? -static_cast<std::int32_t>(difference)
-                    : static_cast<std::int32_t>(difference);
-                if (
-                    entity.presenterDistance <= 0x6000U
-                    && magnitude < 0x200
-                ) {
-                    fireLevel2EnemyProjectile(index, 0);
-                    level2Entities_[index].behaviorTimer = turnTicks;
-                    level2Entities_[index].stateBytes4dTo52[5] = 1;
-                }
-                continue;
-            }
-            if (behavior == 1) {
-                if (entity.behaviorTimer == 0) {
-                    level2Entities_[index].behaviorTimer = turnTicks;
-                    if (static_cast<std::uint8_t>(level2Rng_.next()) < 210) {
-                        level2Entities_[index].stateBytes4dTo52[5] = 2;
-                        fireLevel2EnemyProjectile(index, 0);
-                    } else {
-                        level2Entities_[index].stateBytes4dTo52[5] = 3;
-                    }
-                } else {
-                    --level2Entities_[index].behaviorTimer;
-                }
-                continue;
-            }
-            if (behavior == 2) {
-                if (entity.behaviorTimer == 0) {
-                    if (
-                        static_cast<std::uint8_t>(level2Rng_.next()) < 128
-                    ) {
-                        const auto oldSize = level2Entities_.size();
-                        const auto projectilePoolActiveBefore =
-                            level2ProjectilePoolActive_;
-                        if (
-                            fireLevel2EnemyProjectile(index, 0)
-                            && level2Entities_.size() > oldSize
-                        ) {
-                            // The native callback adjusts the projectile
-                            // returned by FUN_995e.  Pool order is not vector
-                            // order, so the new projectile is not necessarily
-                            // the last entity after insertion.
-                            for (
-                                std::size_t poolIndex = 0;
-                                poolIndex < level2ProjectilePoolSize_;
-                                ++poolIndex
-                            ) {
-                                if (
-                                    projectilePoolActiveBefore[poolIndex]
-                                    || !level2ProjectilePoolActive_[poolIndex]
-                                ) {
-                                    continue;
-                                }
-                                const auto projectileIt = std::find(
-                                    level2EntityProjectilePoolSlots_.begin(),
-                                    level2EntityProjectilePoolSlots_.end(),
-                                    poolIndex
-                                );
-                                if (
-                                    projectileIt
-                                    == level2EntityProjectilePoolSlots_.end()
-                                ) {
-                                    continue;
-                                }
-                                auto& projectile = level2Entities_[
-                                    static_cast<std::size_t>(
-                                        projectileIt
-                                        - level2EntityProjectilePoolSlots_.begin()
-                                    )
-                                ];
-                                projectile.yaw = static_cast<std::uint16_t>(
-                                    static_cast<std::int16_t>(projectile.yaw) < 1
-                                        ? projectile.yaw + 0x6000U
-                                        : projectile.yaw - 0x6000U
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    level2Entities_[index].behaviorTimer = 0x3f;
-                    level2Entities_[index].stateBytes4dTo52[5] = 3;
-                } else {
-                    --level2Entities_[index].behaviorTimer;
-                }
-                continue;
-            }
-            if (behavior == 3) {
-                if (entity.behaviorTimer == 0) {
-                    level2Entities_[index].stateBytes4dTo52[5] = 0;
-                } else {
-                    --level2Entities_[index].behaviorTimer;
-                }
-                continue;
-            }
+            advanceCampaignType10(index);
+            continue;
         }
         if (entity.type != 13) {
             continue;
         }
-        advanceLevel2Type13Behavior(entity);
+        advanceCampaignType13(entity, behaviorTarget);
     }
     // FUN_1000:b996 owns bit 2 for every transformable object. FUN_1000:9298
     // invokes behavior first, then refreshes this main-view center flag on
@@ -5861,65 +3588,14 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                     guardianType48Source.presenterDistance;
                 replacement.targetHeading =
                     guardianType48Source.targetHeading;
-                advanceLevel2Type48Behavior(replacement);
+                advanceCampaignType48(replacement);
             }
             ++level2ActiveEnemyCount_;
             ++level2SpawnedEnemyCount_;
         }
     }
-    if (spawnLevel3Type47Burst != 0) {
-        // FUN_1000:a50e calls FUN_1000:ae10 twice, with opposite nonzero
-        // launch parameters.  Both records finish with zero forward speed,
-        // zero visual timer, and a 500-unit altitude offset; the parameter
-        // affects their transient steering setup only.
-        for (std::uint8_t emission = 0;
-             emission < spawnLevel3Type47Burst;
-             ++emission) {
-            if (std::none_of(
-                level2ActorPoolActive_.begin(),
-                level2ActorPoolActive_.end(),
-                [](const bool active) noexcept { return !active; }
-            )) {
-                // FUN_1000:4370 searches its sixteen-record pool before
-                // calling FUN_1000:4862 or either Type-13 RNG initializer.
-                // A saturated pool therefore makes FUN_1000:ae10 a
-                // zero-draw no-op for this and every remaining emission.
-                break;
-            }
-            // FUN_1000:ae10 requests provisional Type 13 from the shared
-            // FUN_1000:4370 allocator. Preserve the initializer draw at
-            // FUN_1000:4869 plus the Type-13 steering and yaw draws at
-            // FUN_1000:4434/4466 before ae10 overwrites the record as 47.
-            level2Rng_.next();
-            level2Rng_.next();
-            level2Rng_.next();
-            Level1Entity emitted{};
-            emitted.type = 47;
-            emitted.collisionRadius = playableCampaignFrames_ && campaignModelsBound_ ? campaignModels_[47].radius : 0;
-            emitted.position = level3Type47BurstSource.position;
-            emitted.position.z += 500;
-            emitted.pitch = level3Type47BurstSource.pitch;
-            emitted.roll = 0;
-            // FUN_1000:ae10 raises the copied yaw high byte by 0x40 for the
-            // transient FUN_1000:3b3a launch, then subtracts 0x4000 before
-            // storing the final record yaw.
-            emitted.yaw = static_cast<std::uint16_t>(
-                level3Type47BurstSource.yaw + 0x4000U
-            );
-            emitted.forwardVelocity = emission == 0 ? 1000 : -1000;
-            advanceEntityKinematics(emitted);
-            emitted.yaw = static_cast<std::uint16_t>(
-                emitted.yaw - 0x4000U
-            );
-            emitted.forwardVelocity = 0;
-            emitted.stateBytes4dTo52 = {255, 1, 0, 0, 4, 0};
-            emitted.behaviorTimer = 0;
-            const auto emittedIndex = allocateLevel2Actor(emitted);
-            if (emittedIndex != static_cast<std::size_t>(-1)) {
-                ++level2ActiveEnemyCount_;
-                ++level2SpawnedEnemyCount_;
-            }
-        }
+    if (level3Burst) {
+        deployLevel3GuardianBurst(*level3Burst);
     }
     if (deployPostWave && level2PostWaveObjectIndex_ == static_cast<std::size_t>(-1)) {
         const bool guardianMetadata = playableCampaignFrames_
@@ -5978,19 +3654,19 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             );
     }
     if (
-        removedLevel2Entity == static_cast<std::size_t>(-1)
+        retirement.lastNonEffectRemoval == static_cast<std::size_t>(-1)
         && !level2PlayerProjectileAllocated
         && !actorAllocatedThisBoundary
         && !level2RetiredEffectRebuildReported_
-        && retiredDeathEffectCount <= level2EntityCountAtStart
+        && retirement.effectCount <= level2EntityCountAtStart
         && level2Entities_.size()
-            == level2EntityCountAtStart - retiredDeathEffectCount
+            == level2EntityCountAtStart - retirement.effectCount
     ) {
         sortLevel2ActiveByDistance();
     }
-    if (removedLevel2Entity != static_cast<std::size_t>(-1)
+    if (retirement.lastNonEffectRemoval != static_cast<std::size_t>(-1)
         || level2PlayerProjectileAllocated || actorAllocatedThisBoundary
-        || level2RetiredEffectRebuildReported_ || retiredDeathEffectCount != 0
+        || level2RetiredEffectRebuildReported_ || retirement.effectCount != 0
         || level2Entities_.size() != level2EntityCountAtStart) {
         if (guardianAllocatedThisBoundary && level2Visibility_.tracking() == VisibilityTracking::unknown) {
             //The legacy component presenter rebuilds membership without a source visibility receipt.
@@ -5998,7 +3674,7 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         }
         if (activeCampaignLevel_ != 4 && !playableLevel1 && !guardianAllocatedThisBoundary) {
             level2Visibility_.invalidate();
-        } else if (removedLevel2Entity != static_cast<std::size_t>(-1) || retiredDeathEffectCount != 0) {
+        } else if (retirement.lastNonEffectRemoval != static_cast<std::size_t>(-1) || retirement.effectCount != 0) {
             level2Visibility_.removalSucceeded();
         } else {
             level2Visibility_.allocationSucceeded();

@@ -275,6 +275,13 @@ target_compile_options(stellar7_campaign_guardian_children_tests PRIVATE
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
 add_test(NAME stellar7_campaign_guardian_children_tests COMMAND stellar7_campaign_guardian_children_tests)
 
+add_executable(stellar7_campaign_allocation_tests tests/campaign_allocation_test.cpp tests/assertions_enabled.cpp)
+target_include_directories(stellar7_campaign_allocation_tests PRIVATE src)
+target_link_libraries(stellar7_campaign_allocation_tests PRIVATE stellar7_core)
+target_compile_options(stellar7_campaign_allocation_tests PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+add_test(NAME stellar7_campaign_allocation_tests COMMAND stellar7_campaign_allocation_tests)
+
 add_executable(stellar7_world_work_tests tests/world_work_control.cpp)
 target_link_libraries(stellar7_world_work_tests PRIVATE stellar7_core)
 add_test(NAME stellar7_world_work_tests COMMAND stellar7_world_work_tests)
@@ -424,7 +431,7 @@ set(STELLAR7_TEST_RESOURCE_DIR "" CACHE PATH "Supplied Stellar7 resources for co
 if(STELLAR7_TEST_RESOURCE_DIR)
     foreach(resource COCKPIT.RES STELLAR.RES STELART.RES LEVEL1.RES LEVEL2.RES)
         if(NOT EXISTS "${STELLAR7_TEST_RESOURCE_DIR}/${resource}")
-            message(FATAL_ERROR "Missing supplied test resource: ${resource}")
+            message(FATAL_ERROR "Missing supplied test resource: ${resource}. Legacy tests require these filenames in uppercase.")
         endif()
     endforeach()
     add_executable(stellar7_native_level2_retry_resource_tests
@@ -574,15 +581,14 @@ if(STELLAR7_TEST_RESOURCE_DIR)
                 $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
             target_link_options(stellar7_${campaign_test}_tests PRIVATE
                 $<$<CXX_COMPILER_ID:MSVC>:/STACK:16777216>)
+            add_test(NAME stellar7_${campaign_test}_tests
+                COMMAND stellar7_${campaign_test}_tests "${STELLAR7_TEST_RESOURCE_DIR}")
+            set_tests_properties(stellar7_${campaign_test}_tests PROPERTIES
+                LABELS "resource-backed;controlled-session;playable-campaign" TIMEOUT 1800)
             if(campaign_test STREQUAL "playable_level3_progression")
                 add_test(NAME stellar7_playable_level3_combat_retry_tests
                     COMMAND stellar7_${campaign_test}_tests "${STELLAR7_TEST_RESOURCE_DIR}" --combat-retry)
                 set_tests_properties(stellar7_playable_level3_combat_retry_tests PROPERTIES
-                    LABELS "resource-backed;controlled-session;playable-campaign" TIMEOUT 1800)
-            else()
-                add_test(NAME stellar7_${campaign_test}_tests
-                    COMMAND stellar7_${campaign_test}_tests "${STELLAR7_TEST_RESOURCE_DIR}")
-                set_tests_properties(stellar7_${campaign_test}_tests PROPERTIES
                     LABELS "resource-backed;controlled-session;playable-campaign" TIMEOUT 1800)
             endif()
         endforeach()
@@ -663,6 +669,38 @@ foreach(ability_test playable_ability_audio playable_timed_systems playable_deco
         $<$<CXX_COMPILER_ID:MSVC>:/STACK:16777216>)
     add_test(NAME stellar7_${ability_test}_tests COMMAND stellar7_${ability_test}_tests)
 endforeach()
+
+# A complete retained route needs only supplied resources and repository-owned inputs.
+if(STELLAR7_TEST_RESOURCE_DIR)
+    file(GLOB supplied_campaign_files RELATIVE "${STELLAR7_TEST_RESOURCE_DIR}"
+        LIST_DIRECTORIES FALSE CONFIGURE_DEPENDS "${STELLAR7_TEST_RESOURCE_DIR}/*")
+    string(TOUPPER "${supplied_campaign_files}" supplied_campaign_files)
+    set(missing_campaign_resources "")
+    foreach(resource LEVEL3.RES LEVEL4.RES LEVEL5.RES LEVEL6.RES LEVEL7.RES
+        SCENEA.RES SCENEB1.RES SCENEB2.RES SCENEB3.RES SCENEB5.RES SCENEC.RES
+        SCENED.RES SCENEE.RES VOICE.RES DRAXON.RES)
+        if(NOT resource IN_LIST supplied_campaign_files)
+            list(APPEND missing_campaign_resources "${resource}")
+        endif()
+    endforeach()
+    if(missing_campaign_resources)
+        list(JOIN missing_campaign_resources ", " missing_campaign_resources)
+        message(STATUS "Full campaign test unavailable. Missing resources: ${missing_campaign_resources}")
+    else()
+        add_executable(stellar7_playable_full_campaign_tests
+            tests/playable_full_campaign_test.cpp tests/assertions_enabled.cpp)
+        target_include_directories(stellar7_playable_full_campaign_tests PRIVATE src)
+        target_link_libraries(stellar7_playable_full_campaign_tests PRIVATE stellar7_assets stellar7_player)
+        target_compile_options(stellar7_playable_full_campaign_tests PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+        target_link_options(stellar7_playable_full_campaign_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/STACK:16777216>)
+        add_test(NAME stellar7_playable_full_campaign_tests COMMAND stellar7_playable_full_campaign_tests
+            "${STELLAR7_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/easy_campaign.inputs.txt"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/easy_campaign.expected.txt")
+        set_tests_properties(stellar7_playable_full_campaign_tests PROPERTIES
+            LABELS "resource-backed;actual-startup;playable-campaign;full-campaign" TIMEOUT 1800)
+    endif()
+endif()
 
 # New opt-in target only; old delivered3904-route target/fixture stay unchanged.
 set(STELLAR7_TEST_SEQUENTIAL_REPLAY_DIR "" CACHE PATH "Qualified actual-startup sequential4/5/6/7 input and semantic evidence")

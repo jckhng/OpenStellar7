@@ -4,6 +4,82 @@
 
 namespace stellar7 {
 
+GameplayModel::CampaignProjectileSlots GameplayModel::advanceCampaignProjectileLifetimes(
+    const CampaignProjectileSlots& activeAtStart, CampaignRetirement& retirement) {
+    const auto resuming = retirement.continuation == Level2Continuation::successReturn;
+    // FUN_1000:04d8 ages frame-start projectiles. A newly launched
+    // projectile keeps its initial lifetime and position on this boundary.
+    CampaignProjectileSlots terminalPlayerProjectiles{};
+    for (std::size_t index = 0; index < level2Entities_.size();) {
+        auto& entity = level2Entities_[index];
+        const auto projectileSlot =
+            level2EntityProjectilePoolSlots_[index];
+        if (
+            (
+                entity.type != 17
+                && entity.type != 18
+                && entity.type != 19
+                && entity.type != 20
+                && entity.type != 22
+                && entity.type != 23
+            )
+            || projectileSlot >= level2ProjectilePoolSize_
+            || !activeAtStart[projectileSlot]
+        ) {
+            ++index;
+            continue;
+        }
+        if (entity.stateBytes4dTo52[1] > 0) {
+            --entity.stateBytes4dTo52[1];
+        }
+        if (entity.stateBytes4dTo52[1] == 0) {
+            if (activeCampaignLevel_ == 4 && entity.type == 23) {
+                //04d8 still integrates and tests072a at lifetime1->0. Retire
+                //by physical identity after the separated motion/hit passes.
+                terminalPlayerProjectiles[projectileSlot] = true;
+                ++index;
+                continue;
+            }
+            // FUN_1000:04d8 performs the terminal integration before
+            // retiring a lifetime-zero projectile. The presenter list was
+            // built before that updater, so the freed pool record also
+            // receives one final distance/heading refresh even though it is
+            // absent from the rebuilt active allocation list.
+            advanceEntityKinematics(entity);
+            if (!resuming) {
+                entity.presenterDistance = approximatePlanarDistance(
+                    level2Player_.position,
+                    entity.position
+                );
+                entity.targetHeading = presenterTargetHeading(
+                    entity.position,
+                    level2Player_.position
+                );
+            }
+            retireCampaignEntity(index, retirement);
+            continue;
+        }
+        ++index;
+    }
+    return terminalPlayerProjectiles;
+}
+
+void GameplayModel::retireCampaignTerminalPlayerProjectiles(
+    const CampaignProjectileSlots& terminalPlayerProjectiles, CampaignRetirement& retirement) {
+    for (std::size_t index = 0; index < level2Entities_.size();) {
+        const auto slot = level2EntityProjectilePoolSlots_[index];
+        auto& entity = level2Entities_[index];
+        if (slot >= level2ProjectilePoolSize_ || !terminalPlayerProjectiles[slot]
+            || entity.type != 23 || entity.stateBytes4dTo52[1] != 0) {
+            ++index;
+            continue;
+        }
+        entity.presenterDistance = approximatePlanarDistance(level2Player_.position, entity.position);
+        entity.targetHeading = presenterTargetHeading(entity.position, level2Player_.position);
+        retireCampaignEntity(index, retirement);
+    }
+}
+
 void GameplayModel::retireCampaignEntity(const std::size_t removed, CampaignRetirement& retirement) noexcept {
     constexpr auto fixedContactBase = retiredFixedContactBase_;
     level2PrefixGuards_.reset();

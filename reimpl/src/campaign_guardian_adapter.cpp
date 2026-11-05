@@ -10,6 +10,114 @@
 
 namespace stellar7 {
 
+GameplayModel::CampaignArrivalAction GameplayModel::advanceCampaignArrivalCraft(Level1Entity& entity) {
+    constexpr std::size_t craftBehaviorByte = 5;
+    constexpr std::uint8_t approachState = 0;
+    constexpr std::uint8_t brakingState = 1;
+    constexpr std::uint8_t beamOpeningState = 2;
+    constexpr std::uint8_t deploymentState = 3;
+    constexpr std::uint8_t departureState = 4;
+
+    // FUN_1000:af8c writes each transition to the retained craft record.
+    auto& behavior = entity.stateBytes4dTo52[craftBehaviorByte];
+    if (behavior == approachState) {
+        const auto difference = static_cast<std::int16_t>(
+            entity.targetHeading - entity.yaw
+        );
+        const auto nextYawVelocity = static_cast<std::int16_t>(
+            std::clamp<std::int32_t>(difference, -0x500, 0x500)
+        );
+        auto bank = static_cast<std::int32_t>(
+            static_cast<std::int16_t>(entity.roll)
+        );
+        bank += arithmeticShiftRightFour(
+            -(
+                static_cast<std::int32_t>(nextYawVelocity) * 0x10
+                + bank
+            )
+        );
+        entity.roll = static_cast<std::uint16_t>(bank);
+        entity.yawVelocity = nextYawVelocity;
+        if (entity.presenterDistance < 1000U) {
+            behavior = brakingState;
+            entity.behaviorTimer = 0x50;
+        }
+    } else if (behavior == brakingState) {
+        entity.forwardVelocity = static_cast<std::int16_t>(
+            entity.forwardVelocity - 5
+        );
+        --entity.behaviorTimer;
+        if (entity.forwardVelocity == 0) {
+            behavior = beamOpeningState;
+            entity.behaviorTimer = 0x1D;
+        }
+    } else if (behavior == beamOpeningState) {
+        --entity.behaviorTimer;
+        entity.stateBytes4dTo52[2] = static_cast<std::uint8_t>(
+            static_cast<std::int8_t>(entity.behaviorTimer) / -10
+            + 3
+        );
+        if (entity.behaviorTimer == 0) {
+            behavior = deploymentState;
+            entity.behaviorTimer = 0x46;
+            entity.flags = static_cast<std::uint8_t>(
+                entity.flags | 0x08U
+            );
+            entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorNoCallback
+                ? WorldActorRenderProfile::inlineSelectorBeamCallback : WorldActorRenderProfile::unknown;
+        }
+    } else if (behavior == deploymentState) {
+        --entity.behaviorTimer;
+        if (static_cast<std::int8_t>(entity.behaviorTimer) < 0x1E) {
+            if (entity.behaviorTimer == 0x1D) {
+                entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorBeamCallback
+                    ? WorldActorRenderProfile::inlineSelectorNoCallback : WorldActorRenderProfile::unknown;
+                entity.flags = static_cast<std::uint8_t>(
+                    entity.flags & static_cast<std::uint8_t>(~0x08U)
+                );
+                return CampaignArrivalAction::deployGuardian;
+            } else {
+                entity.stateBytes4dTo52[2] =
+                    static_cast<std::uint8_t>(
+                        static_cast<std::int8_t>(
+                            entity.behaviorTimer
+                        ) / 10
+                    );
+                if (entity.behaviorTimer == 0) {
+                    behavior = departureState;
+                    entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorNoCallback
+                        ? WorldActorRenderProfile::inlineSelectorDeparture : WorldActorRenderProfile::unknown;
+                    // Native b452 dispatches operation 0x14 (SBL: RET),
+                    // not the event-start operation used by b3e6.
+                }
+            }
+        }
+    } else if (behavior == departureState) {
+        auto bank = static_cast<std::int32_t>(
+            static_cast<std::int16_t>(entity.roll)
+        );
+        bank += arithmeticShiftRightFour(
+            -(
+                static_cast<std::int32_t>(0x100) * 0x10
+                + bank
+            )
+        );
+        entity.roll = static_cast<std::uint16_t>(bank);
+        entity.pitch = static_cast<std::uint16_t>(
+            entity.pitch + 0x90
+        );
+        entity.forwardVelocity = static_cast<std::int16_t>(
+            entity.forwardVelocity + 0x32
+        );
+        entity.yawVelocity = 0x100;
+        if (entity.presenterDistance > 60000U) {
+            entity.stateBytes4dTo52[1] = 0;
+            return CampaignArrivalAction::retire;
+        }
+    }
+    return CampaignArrivalAction::none;
+}
+
 void GameplayModel::advancePhysicalLevel2Guardian(const std::size_t slot, const Level1Entity& behaviorTarget,
     const CampaignProjectileContactResult& projectileContact, bool& guardianAllocatedThisBoundary) {
     const auto live = std::find(level2EntityActorPoolSlots_.begin(), level2EntityActorPoolSlots_.end(), slot);

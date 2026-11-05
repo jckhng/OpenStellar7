@@ -2549,61 +2549,7 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         return;
     }
 
-    // FUN_1000:04d8 owns the shared projectile lifetime. A newly launched
-    // projectile is appended after this pass, so its 84-tick lifetime and
-    // initial position remain intact on the launch boundary.
-    std::array<bool, level2ProjectilePoolSize_> terminalPlayerProjectiles{};
-    for (std::size_t index = 0; index < level2Entities_.size();) {
-        auto& entity = level2Entities_[index];
-        const auto projectileSlot =
-            level2EntityProjectilePoolSlots_[index];
-        if (
-            (
-                entity.type != 17
-                && entity.type != 18
-                && entity.type != 19
-                && entity.type != 20
-                && entity.type != 22
-                && entity.type != 23
-            )
-            || projectileSlot >= level2ProjectilePoolSize_
-            || !level2ProjectileActiveAtStart[projectileSlot]
-        ) {
-            ++index;
-            continue;
-        }
-        if (entity.stateBytes4dTo52[1] > 0) {
-            --entity.stateBytes4dTo52[1];
-        }
-        if (entity.stateBytes4dTo52[1] == 0) {
-            if (activeCampaignLevel_ == 4 && entity.type == 23) {
-                //04d8 still integrates and tests072a at lifetime1->0. Retire
-                //by physical identity after the separated motion/hit passes.
-                terminalPlayerProjectiles[projectileSlot] = true;
-                ++index;
-                continue;
-            }
-            // FUN_1000:04d8 performs the terminal integration before
-            // retiring a lifetime-zero projectile. The presenter list was
-            // built before that updater, so the freed pool record also
-            // receives one final distance/heading refresh even though it is
-            // absent from the rebuilt active allocation list.
-            advanceEntityKinematics(entity);
-            if (!resuming) {
-                entity.presenterDistance = approximatePlanarDistance(
-                    level2Player_.position,
-                    entity.position
-                );
-                entity.targetHeading = presenterTargetHeading(
-                    entity.position,
-                    level2Player_.position
-                );
-            }
-            removeLevel2Entity(index);
-            continue;
-        }
-        ++index;
-    }
+    const auto terminalPlayerProjectiles = advanceCampaignProjectileLifetimes(level2ProjectileActiveAtStart, retirement);
 
     // A terminal effect has already left the allocation list, but its pointer
     // remains in FUN_1000:9298's presenter list for one more boundary.  That
@@ -2813,20 +2759,8 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         return;
     }
     const auto retiredType48ActorSlot = projectileContact.retiredType48ActorSlot;
-    const auto& level2GuardianRetiredContact = projectileContact.guardianRetiredContact;
     if (activeCampaignLevel_ == 4) {
-        for (std::size_t index = 0; index < level2Entities_.size();) {
-            const auto slot = level2EntityProjectilePoolSlots_[index];
-            auto& entity = level2Entities_[index];
-            if (slot >= level2ProjectilePoolSize_ || !terminalPlayerProjectiles[slot]
-                || entity.type != 23 || entity.stateBytes4dTo52[1] != 0) {
-                ++index;
-                continue;
-            }
-            entity.presenterDistance = approximatePlanarDistance(level2Player_.position, entity.position);
-            entity.targetHeading = presenterTargetHeading(entity.position, level2Player_.position);
-            removeLevel2Entity(index);
-        }
+        retireCampaignTerminalPlayerProjectiles(terminalPlayerProjectiles, retirement);
     }
     if (playerContact.retiredType48ActorSlot < level2ActorPoolSize_) {
         const auto pendingType48 = std::find(
@@ -2925,580 +2859,11 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             retired.targetHeading = presenterTargetHeading(retired.position, behaviorTarget.position);
         }
     }
-    // FUN_1000:9298 walks the inherited pointer list. Rebuilds and vector
-    // insertion can change portable indices without changing those pointer
-    // identities, so remap the boundary-start pool records after membership
-    // changes instead of substituting the newly rebuilt index list.
     //0784's0A7F epilogue oscillates128E independently of the inherited list.
     //A reward born inside a projectile callback goes2->3 before its first main.
     advanceLevel2Pickup();
-    const auto behaviorOrder = remapLevel2BoundaryOrder(level2ActiveIdentitiesAtStart);
-    auto deployPostWave = false;
-    auto retireCompletionObject = static_cast<std::size_t>(-1);
-    auto spawnGuardianType48 = false;
-    auto spawnGuardianType47 = false;
-    std::optional<Level1Entity> level3Burst;
-    Level1Entity postWaveSource{};
-    Level1Entity guardianType48Source{};
-    bool guardianAllocatedThisBoundary = false;
-    const auto behaviorCount = activeCampaignLevel_ == 4 || campaignGuardians || physicalLevel2Guardian
-        ? level2ActiveIdentitiesAtStart.size() : behaviorOrder.size();
-    for (std::size_t position = 0; position < behaviorCount; ++position) {
-        auto index = static_cast<std::size_t>(-1);
-        if (activeCampaignLevel_ == 4 || campaignGuardians || physicalLevel2Guardian) {
-            const auto identity = level2ActiveIdentitiesAtStart[position];
-            if (identity.pool != 0) {
-                if(playableCampaignFrames_ && level1_.systemTimers_[0]!=0) {
-                    auto& slots=identity.pool==1 ? level2EntityProjectilePoolSlots_
-                        : identity.pool==2 ? level2EntityDeathEffectPoolSlots_ : level2EntityFixedPoolSlots_;
-                    const auto live=std::find(slots.begin(),slots.end(),identity.slot);
-                    auto& physical=identity.pool==1 ? level2ProjectilePool_[identity.slot]
-                        : identity.pool==2 ? level2DeathEffectPool_[identity.slot] : level2FixedPool_[identity.slot];
-                    if(live!=slots.end()) {
-                        auto& actor=level2Entities_[static_cast<std::size_t>(live-slots.begin())];
-                        refreshPlayableTarget(actor,behaviorTarget);physical=actor;
-                    } else {refreshPlayableTarget(physical,behaviorTarget);}
-                }
-                continue;
-            }
-            const auto owner = std::find(level2EntityActorPoolSlots_.begin(),
-                level2EntityActorPoolSlots_.end(), identity.slot);
-            if (owner == level2EntityActorPoolSlots_.end()) {
-                //481a removed allocation membership;9298 still owns this pool
-                //pointer. Common motion already ran before the separated hit.
-                auto& retired = level2ActorPool_[identity.slot];
-                if (physicalLevel2Guardian) {
-                    if (retired.type == 44 || retired.type == 45) {
-                        advancePhysicalLevel2Guardian(identity.slot, behaviorTarget, projectileContact, guardianAllocatedThisBoundary);
-                    } else if (retired.type == 48) {
-                        refreshPlayableTarget(retired, behaviorTarget);
-                        advanceCampaignType48(retired);
-                    }
-                    continue;
-                }
-                if(playableCampaignFrames_ && level1_.systemTimers_[0]!=0) {refreshPlayableTarget(retired,behaviorTarget);}
-                if (campaignGuardians) {
-                    if (retired.type == 44) {
-                        auto shadow = retired;
-                        shadow.presenterDistance = approximatePlanarDistance(behaviorTarget.position, shadow.position);
-                        shadow.targetHeading = presenterTargetHeading(shadow.position, behaviorTarget.position);
-                        advanceCampaignGuardian(shadow, identity.slot, level2ActiveIdentitiesAtStart, combat);
-                    } else if (retired.type == 11 || retired.type == 5 || retired.type == 8) {
-                        retired.presenterDistance = approximatePlanarDistance(behaviorTarget.position, retired.position);
-                        retired.targetHeading = presenterTargetHeading(retired.position, behaviorTarget.position);
-                        advanceCampaignOrdinaryWithFire(retired, identity.slot, behaviorTarget);
-                    }
-                    continue;
-                }
-                retired.presenterDistance = approximatePlanarDistance(behaviorTarget.position, retired.position);
-                retired.targetHeading = presenterTargetHeading(retired.position, behaviorTarget.position);
-                if (retired.type == 11 || retired.type == 5 || retired.type == 8) {
-                    advanceCampaignOrdinaryWithFire(retired, identity.slot, behaviorTarget);
-                } else if (retired.type == 13) {
-                    if (retired.collisionContactAllocationIndex != static_cast<std::size_t>(-1)) {
-                        throw std::invalid_argument("Level5 removed Type13 contact requires retained pointer identity");
-                    }
-                    advanceCampaignType13(retired, behaviorTarget);
-                } else if (retired.type == 44) {
-                    advanceLevel5Guardian(retired, identity.slot);
-                } else {
-                    throw std::invalid_argument("Level5 removed ordinary requires its inherited behavior callback");
-                }
-                continue;
-            }
-            index = static_cast<std::size_t>(owner - level2EntityActorPoolSlots_.begin());
-        } else {
-            index = behaviorOrder[position];
-        }
-        if (index >= level2Entities_.size()) {
-            continue;
-        }
-        if (!physicalLevel2Guardian && !actorExistedAtStart(index)) {
-            continue;
-        }
-        auto& entity = level2Entities_[index];
-        if ((physicalLevel2Guardian && entity.type >= 44 && entity.type <= 48)
-            || (playableCampaignFrames_ && level1_.systemTimers_[0] != 0)) {
-            refreshPlayableTarget(entity, behaviorTarget);
-        }
-        if (entity.type == 7) {
-            // FUN_1000:af8c mutates the callback state byte in place. Keep a
-            // reference so the delivery state survives the boundary; a
-            // copied byte would replay state 1 forever after forward speed
-            // reached zero.
-            auto& behavior = entity.stateBytes4dTo52[5];
-            if (behavior == 0) {
-                const auto difference = static_cast<std::int16_t>(
-                    entity.targetHeading - entity.yaw
-                );
-                const auto nextYawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(difference, -0x500, 0x500)
-                );
-                auto bank = static_cast<std::int32_t>(
-                    static_cast<std::int16_t>(entity.roll)
-                );
-                bank += arithmeticShiftRightFour(
-                    -(
-                        static_cast<std::int32_t>(nextYawVelocity) * 0x10
-                        + bank
-                    )
-                );
-                entity.roll = static_cast<std::uint16_t>(bank);
-                entity.yawVelocity = nextYawVelocity;
-                if (entity.presenterDistance < 1000U) {
-                    behavior = 1;
-                    entity.behaviorTimer = 0x50;
-                }
-            } else if (behavior == 1) {
-                entity.forwardVelocity = static_cast<std::int16_t>(
-                    entity.forwardVelocity - 5
-                );
-                --entity.behaviorTimer;
-                if (entity.forwardVelocity == 0) {
-                    behavior = 2;
-                    entity.behaviorTimer = 0x1D;
-                }
-            } else if (behavior == 2) {
-                --entity.behaviorTimer;
-                entity.stateBytes4dTo52[2] = static_cast<std::uint8_t>(
-                    static_cast<std::int8_t>(entity.behaviorTimer) / -10
-                    + 3
-                );
-                if (entity.behaviorTimer == 0) {
-                    behavior = 3;
-                    entity.behaviorTimer = 0x46;
-                    entity.flags = static_cast<std::uint8_t>(
-                        entity.flags | 0x08U
-                    );
-                    entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorNoCallback
-                        ? WorldActorRenderProfile::inlineSelectorBeamCallback : WorldActorRenderProfile::unknown;
-                }
-            } else if (behavior == 3) {
-                --entity.behaviorTimer;
-                if (static_cast<std::int8_t>(entity.behaviorTimer) < 0x1E) {
-                    if (entity.behaviorTimer == 0x1D) {
-                        entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorBeamCallback
-                            ? WorldActorRenderProfile::inlineSelectorNoCallback : WorldActorRenderProfile::unknown;
-                        entity.flags = static_cast<std::uint8_t>(
-                            entity.flags & static_cast<std::uint8_t>(~0x08U)
-                        );
-                        deployPostWave = true;
-                        postWaveSource = entity;
-                    } else {
-                        entity.stateBytes4dTo52[2] =
-                            static_cast<std::uint8_t>(
-                                static_cast<std::int8_t>(
-                                    entity.behaviorTimer
-                                ) / 10
-                            );
-                        if (entity.behaviorTimer == 0) {
-                            behavior = 4;
-                            entity.renderProfile = entity.renderProfile == WorldActorRenderProfile::inlineSelectorNoCallback
-                                ? WorldActorRenderProfile::inlineSelectorDeparture : WorldActorRenderProfile::unknown;
-                            // Native b452 dispatches operation 0x14 (SBL: RET),
-                            // not the event-start operation used by b3e6.
-                        }
-                    }
-                }
-            } else if (behavior == 4) {
-                auto bank = static_cast<std::int32_t>(
-                    static_cast<std::int16_t>(entity.roll)
-                );
-                bank += arithmeticShiftRightFour(
-                    -(
-                        static_cast<std::int32_t>(0x100) * 0x10
-                        + bank
-                    )
-                );
-                entity.roll = static_cast<std::uint16_t>(bank);
-                entity.pitch = static_cast<std::uint16_t>(
-                    entity.pitch + 0x90
-                );
-                entity.forwardVelocity = static_cast<std::int16_t>(
-                    entity.forwardVelocity + 0x32
-                );
-                entity.yawVelocity = 0x100;
-                if (entity.presenterDistance > 60000U) {
-                    entity.stateBytes4dTo52[1] = 0;
-                    retireCompletionObject = index;
-                }
-            }
-            continue;
-        }
-        if (entity.type == 47 || entity.type == 48) {
-            if (entity.type == 48) {
-                advanceCampaignType48(entity);
-                continue;
-            }
-            if (entity.position.z > 0) {
-                entity.position.z -= 50;
-            }
-            if (entity.behaviorTimer != 0) {
-                --entity.behaviorTimer;
-                advanceEntityKinematics(entity);
-            } else {
-                entity.yaw = entity.targetHeading;
-                entity.stateBytes4dTo52[2] = static_cast<std::uint8_t>(
-                    (entity.stateBytes4dTo52[2] + 1U) & 0x03U
-                );
-                if(activeCampaignLevel_==2) {
-                    constexpr std::uint8_t alternateStride=4;
-                    auto stride=entity.presentationModelAnimationVariant&alternateStride;
-                    if(entity.stateBytes4dTo52[2]==0) {stride^=alternateStride;}
-                    entity.presentationModelAnimationVariant=static_cast<std::uint8_t>(stride|entity.stateBytes4dTo52[2]);
-                }
-                applyCampaignGroundRidingVelocity(entity, behaviorTarget);
-            }
-            continue;
-        }
-        if (entity.type == 44 || entity.type == 45) {
-            if (physicalLevel2Guardian) {
-                advancePhysicalLevel2Guardian(level2EntityActorPoolSlots_[index], behaviorTarget, projectileContact, guardianAllocatedThisBoundary);
-                continue;
-            }
-            if (campaignGuardians) {
-                if (entity.type != 44) {
-                    throw std::invalid_argument("campaign guardian has no Type45 callback");
-                }
-                const auto ownerSlot = level2EntityActorPoolSlots_[index];
-                auto shadow = entity;
-                advanceCampaignGuardian(shadow, ownerSlot, level2ActiveIdentitiesAtStart, combat);
-                continue;
-            }
-            if (activeCampaignLevel_ == 0 || activeCampaignLevel_ == 3 || activeCampaignLevel_ == 5 || activeCampaignLevel_ == 6) {
-                throw std::invalid_argument("later guardian requires explicit playable campaign execution");
-            }
-            if (activeCampaignLevel_ == 4) {
-                if (entity.type != 44) {
-                    throw std::invalid_argument("Level5 has no Type45 guardian model");
-                }
-                const auto ownerSlot = level2EntityActorPoolSlots_[index];
-                auto current = entity;
-                advanceLevel5Guardian(current, ownerSlot);
-                const auto owner = std::find(level2EntityActorPoolSlots_.begin(), level2EntityActorPoolSlots_.end(), ownerSlot);
-                level2Entities_[static_cast<std::size_t>(owner - level2EntityActorPoolSlots_.begin())] = current;
-                continue;
-            }
-            if (activeCampaignLevel_ == 2) {
-                if (auto burst = advanceLevel3Guardian(entity)) {
-                    level3Burst = std::move(burst);
-                }
-                continue;
-            }
-            const auto choice = level2Rng_.next();
-            auto& behavior = entity.stateBytes4dTo52[5];
-            const auto guardianSlot = level2EntityActorPoolSlots_[index];
-            const auto retiredContact = guardianSlot < level2ActorPoolSize_
-                && level2GuardianRetiredContact[guardianSlot];
-            if (behavior == 0) {
-                entity.forwardVelocity = 100;
-                const auto difference = static_cast<std::int16_t>(
-                    entity.yaw - entity.targetHeading
-                );
-                entity.yawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(
-                        difference == std::numeric_limits<std::int16_t>::min()
-                            ? 0x8000
-                            : difference,
-                        -0x200,
-                        0x200
-                    )
-                );
-                if (entity.renderProfile != WorldActorRenderProfile::heapSelectorDeferredAnimation) {
-                    entity.renderProfile = WorldActorRenderProfile::unknown;
-                }
-                entity.type = 44;
-                if (choice < 300U) {
-                    behavior = 1;
-                    entity.behaviorTimer = 36;
-                }
-                if (
-                    (choice & 0x003fU) == 0
-                    && level2CompletionObjectIndex_
-                        == static_cast<std::size_t>(-1)
-                    && entity.collisionContactAllocationIndex
-                        == static_cast<std::size_t>(-1)
-                    && !entity.collisionContactIsPlayer
-                ) {
-                    spawnGuardianType47 = activeCampaignLevel_ == 2;
-                    spawnGuardianType48 = !spawnGuardianType47 && !retiredContact;
-                    guardianType48Source = entity;
-                }
-                // FUN_1000:a92e consumes the shared contact pointer after
-                // every behavior-0 callback that does not return through a
-                // successful Type 48 launch. A successful launch necessarily
-                // entered with a null pointer, so clearing both portable
-                // contact representations preserves that path as well.
-                entity.collisionContactAllocationIndex =
-                    static_cast<std::size_t>(-1);
-                entity.collisionContactIsPlayer = false;
-            } else if (behavior == 1) {
-                const auto timerDistance = std::abs(
-                    static_cast<int>(entity.behaviorTimer) - 20
-                );
-                entity.presentationModelAnimationVariant =
-                    static_cast<std::uint8_t>(timerDistance >> 2);
-                if (activeCampaignLevel_ == 1) {
-                    entity.modelAnimationVariant =
-                        entity.presentationModelAnimationVariant;
-                }
-                entity.yawVelocity = 0;
-                entity.forwardVelocity = 0;
-                entity.type = 45;
-                if (entity.renderProfile != WorldActorRenderProfile::heapSelectorDeferredAnimation) {
-                    entity.renderProfile = WorldActorRenderProfile::unknown;
-                }
-                --entity.behaviorTimer;
-                if (
-                    entity.behaviorTimer == 20
-                    && !retiredContact
-                    && entity.collisionContactAllocationIndex
-                        == static_cast<std::size_t>(-1)
-                    && !entity.collisionContactIsPlayer
-                ) {
-                    Level1Entity emitted{};
-                    emitted.type = 46;
-                    emitted.collisionRadius = entity.collisionRadius == 0
-                        ? 0
-                        : 2260;
-                    emitted.position = entity.position;
-                    emitted.stateBytes4dTo52 = {
-                        254, 100, 0, 0, 0, 0,
-                    };
-                    allocateLevel2FixedObject(emitted);
-                } else if (entity.behaviorTimer == 0) {
-                    behavior = 0;
-                }
-            }
-            continue;
-        }
-        if (entity.type == 25 || entity.type == 26) {
-            // FE gates have no 094F actor callback. The playable 0784 epilogue owns their oscillator.
-            if (playableCampaignFrames_) {continue;}
-            auto& presentation = entity.stateBytes4dTo52[2];
-            auto& direction = entity.stateBytes4dTo52[5];
-            if (static_cast<std::int8_t>(presentation) < 1) {
-                direction = 1;
-            } else if (static_cast<std::int8_t>(presentation) > 2) {
-                direction = 0xff;
-            }
-            presentation = static_cast<std::uint8_t>(
-                presentation + static_cast<std::int8_t>(direction)
-            );
-            continue;
-        }
-        if (entity.type == 12) {
-            advanceCampaignType12(index);
-            continue;
-        }
-        if ((activeCampaignLevel_ == 4 || playableCampaignFrames_)
-            && (entity.type == 11 || entity.type == 5 || entity.type == 8)) {
-            advanceLiveCampaignOrdinary(index, behaviorTarget);
-            continue;
-        }
-        if (entity.type >= 1 && entity.type <= 5) {
-            const auto type = entity.type;
-            constexpr std::array<std::uint8_t, 6> choice2LowerByType{{
-                0, 50, 32, 48, 50, 16,
-            }};
-            constexpr std::array<std::uint8_t, 6> choice3LowerByType{{
-                0, 102, 96, 128, 96, 110,
-            }};
-            constexpr std::array<std::int16_t, 6> cruiseSpeedByType{{
-                0, 225, 144, 216, 180, 135,
-            }};
-            constexpr std::array<std::int16_t, 6> reverseSpeedByType{{
-                0, 45, 72, 72, 90, 67,
-            }};
-            constexpr std::array<std::int16_t, 6> turnFactorByType{{
-                0, 1, 2, 3, 2, 2,
-            }};
-            constexpr std::array<std::uint8_t, 6> behavior2ResetByType{{
-                0, 12, 6, 10, 8, 4,
-            }};
-            constexpr std::array<std::uint8_t, 6> behavior3ResetByType{{
-                0, 5, 2, 6, 6, 4,
-            }};
-            const auto typeIndex = static_cast<std::size_t>(type);
-            const auto choice2Lower = choice2LowerByType[typeIndex];
-            const auto choice3Lower = choice3LowerByType[typeIndex];
-            const auto turnLimit = static_cast<std::int16_t>(
-                turnFactorByType[typeIndex] * 128 + 15
-            );
-            const auto cruiseSpeed = cruiseSpeedByType[typeIndex];
-            const auto reverseSpeed = reverseSpeedByType[typeIndex];
-            const auto turnFactor = turnFactorByType[typeIndex];
-            const auto behavior2Reset = behavior2ResetByType[typeIndex];
-            const auto behavior3Reset = behavior3ResetByType[typeIndex];
-            auto behavior = entity.stateBytes4dTo52[5];
-            const auto insideAttackRange = entity.position.z < 0
-                || entity.presenterDistance <= 0x6000U;
-            if (behavior == 0) {
-                entity.behaviorTimer = 0;
-                const auto choice = static_cast<std::uint8_t>(
-                    level2Rng_.next()
-                );
-                behavior = choice < choice2Lower
-                    ? 1
-                    : (choice < choice3Lower ? 2 : 3);
-            }
-            if (behavior == 1) {
-                auto& item = level2Entities_[index];
-                if (item.behaviorTimer == 0) {
-                    item.forwardVelocity = cruiseSpeed;
-                    const auto choice = level2Rng_.next();
-                    if (static_cast<std::uint8_t>(choice) < 90) {
-                        item.yawVelocity = 0;
-                    } else {
-                        auto turn = static_cast<std::int16_t>(
-                            static_cast<std::int16_t>(choice)
-                                % (turnFactor << 7)
-                            + 256
-                        );
-                        if ((choice & 0x0100U) != 0) {
-                            turn = static_cast<std::int16_t>(-turn);
-                        }
-                        item.yawVelocity = turn;
-                    }
-                    item.behaviorTimer = static_cast<std::uint8_t>(
-                        (choice >> 8U) & 0x7FU
-                    );
-                } else {
-                    --item.behaviorTimer;
-                    if (item.behaviorTimer == 0) {
-                        behavior = 0;
-                    }
-                    if (insideAttackRange) {
-                        fireLevel2EnemyProjectile(index);
-                    }
-                }
-            } else if (behavior == 2) {
-                auto& item = level2Entities_[index];
-                item.forwardVelocity = 0;
-                const auto difference = static_cast<std::int16_t>(
-                    item.targetHeading - item.yaw
-                );
-                item.yawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(
-                        difference,
-                        -turnLimit,
-                        turnLimit
-                    )
-                );
-                if (
-                    !insideAttackRange
-                    || fireLevel2EnemyProjectile(index)
-                ) {
-                    behavior = 0;
-                }
-                if (
-                    static_cast<std::uint8_t>(level2Rng_.next())
-                    < behavior2Reset
-                ) {
-                    behavior = 0;
-                }
-            } else if (behavior == 3) {
-                auto& item = level2Entities_[index];
-                const auto difference = static_cast<std::int16_t>(
-                    item.targetHeading - item.yaw
-                );
-                item.yawVelocity = static_cast<std::int16_t>(
-                    std::clamp<std::int32_t>(
-                        difference,
-                        -turnLimit,
-                        turnLimit
-                    )
-                );
-                if (insideAttackRange) {
-                    fireLevel2EnemyProjectile(index);
-                }
-                if (
-                    static_cast<std::uint8_t>(level2Rng_.next())
-                    < behavior3Reset
-                ) {
-                    behavior = 0;
-                }
-            } else if (behavior == 4) {
-                auto& item = level2Entities_[index];
-                item.collisionContactAllocationIndex =
-                    static_cast<std::size_t>(-1);
-                item.collisionContactIsPlayer = false;
-                if (item.behaviorTimer == 0) {
-                    const auto choice = level2Rng_.next();
-                    item.forwardVelocity = item.forwardVelocity < 1
-                        ? cruiseSpeed
-                        : static_cast<std::int16_t>(-reverseSpeed);
-                    const auto turn = static_cast<std::int16_t>(
-                        turnFactor << 8
-                    );
-                    item.yawVelocity = (choice & 0x0200U) != 0
-                        ? static_cast<std::int16_t>(-turn)
-                        : turn;
-                    item.behaviorTimer = 0x3F;
-                } else {
-                    --item.behaviorTimer;
-                    if (item.behaviorTimer == 0) {
-                        behavior = 0;
-                        item.forwardVelocity = cruiseSpeed;
-                    }
-                    if (insideAttackRange) {
-                        fireLevel2EnemyProjectile(index);
-                    }
-                }
-            } else if (behavior == 5) {
-                auto& item = level2Entities_[index];
-                item.forwardVelocity = cruiseSpeed;
-                const auto choice = level2Rng_.next();
-                if (static_cast<std::uint8_t>(choice) < 90) {
-                    item.yawVelocity = 0;
-                } else {
-                    auto turn = static_cast<std::int16_t>(
-                        static_cast<std::int16_t>(choice)
-                            % (turnFactor << 7)
-                        + 256
-                    );
-                    if ((choice & 0x0100U) != 0) {
-                        turn = static_cast<std::int16_t>(-turn);
-                    }
-                    item.yawVelocity = turn;
-                }
-                item.behaviorTimer = static_cast<std::uint8_t>(
-                    (choice >> 8U) & 0x7FU
-                );
-            }
-            level2Entities_[index].stateBytes4dTo52[5] = behavior;
-            continue;
-        }
-        if (entity.type == 8) {
-            const auto difference = static_cast<std::int16_t>(
-                entity.targetHeading - entity.yaw
-            );
-            entity.yawVelocity = static_cast<std::int16_t>(
-                std::clamp<std::int32_t>(difference, -143, 143)
-            );
-
-            if (entity.presenterDistance <= 0x6000U) {
-                fireLevel2EnemyProjectile(index);
-            }
-            continue;
-        }
-        if (playableCampaignFrames_ && entity.type == 6) {
-            advanceCampaignType6(index);
-            continue;
-        }
-        if (playableCampaignFrames_ && entity.type == 9) {
-            advanceCampaignType9(index);
-            continue;
-        }
-        if (entity.type == 10) {
-            advanceCampaignType10(index);
-            continue;
-        }
-        if (entity.type != 13) {
-            continue;
-        }
-        advanceCampaignType13(entity, behaviorTarget);
-    }
+    const auto actorWalk = advanceCampaignActorWalk(contactStart, behaviorTarget,
+        projectileContact, combat, physicalLevel2Guardian);
     // FUN_1000:b996 owns bit 2 for every transformable object. FUN_1000:9298
     // invokes behavior first, then refreshes this main-view center flag on
     // the inherited presenter list. Level 3 loop 1558 exposes the clear
@@ -3534,23 +2899,23 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             );
         }
     }
-    if (retireCompletionObject < level2Entities_.size()) {
-        removeLevel2Entity(retireCompletionObject);
+    if (actorWalk.retireCompletionObject < level2Entities_.size()) {
+        removeLevel2Entity(actorWalk.retireCompletionObject);
         level2CompletionObjectIndex_ = static_cast<std::size_t>(-1);
         if (
-            !playableCampaignFrames_ && level2PostWaveObjectIndex_ > retireCompletionObject
+            !playableCampaignFrames_ && level2PostWaveObjectIndex_ > actorWalk.retireCompletionObject
             && level2PostWaveObjectIndex_ < static_cast<std::size_t>(-1)
         ) {
             --level2PostWaveObjectIndex_;
         }
         if (
-            !playableCampaignFrames_ && level2PickupIndex_ > retireCompletionObject
+            !playableCampaignFrames_ && level2PickupIndex_ > actorWalk.retireCompletionObject
             && level2PickupIndex_ < static_cast<std::size_t>(-1)
         ) {
             --level2PickupIndex_;
         }
     }
-    if (spawnGuardianType48 || spawnGuardianType47) {
+    if (actorWalk.spawnGuardianType48 || actorWalk.spawnGuardianType47) {
         // FUN_1000:ae10 allocates through the ordinary actor initializer;
         // its overwritten defaults and model setup consume three Stellar
         // RNG words before the ground updater runs. The campaign index
@@ -3559,25 +2924,25 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         level2Rng_.next();
         level2Rng_.next();
         Level1Entity emitted{};
-        emitted.type = spawnGuardianType47 ? 47 : 48;
+        emitted.type = actorWalk.spawnGuardianType47 ? 47 : 48;
         emitted.collisionRadius = playableCampaignFrames_ && campaignModelsBound_ ? campaignModels_[emitted.type].radius
-            : spawnGuardianType47 ? 0 : 559;
-        emitted.position = guardianType48Source.position;
+            : actorWalk.spawnGuardianType47 ? 0 : 559;
+        emitted.position = actorWalk.guardianType48Source.position;
         emitted.position.z += 500;
-        emitted.pitch = guardianType48Source.pitch;
+        emitted.pitch = actorWalk.guardianType48Source.pitch;
         emitted.roll = 0;
-        emitted.yaw = guardianType48Source.yaw;
+        emitted.yaw = actorWalk.guardianType48Source.yaw;
         emitted.stateBytes4dTo52 = {255, 1, 0, 0, 4, 0};
         emitted.behaviorTimer = nextLevel2VisualRandomByte();
         const auto emittedIndex = allocateLevel2Actor(emitted);
         if (emittedIndex != static_cast<std::size_t>(-1)) {
-            if (activeCampaignLevel_ == 1 && !spawnGuardianType47) {
+            if (activeCampaignLevel_ == 1 && !actorWalk.spawnGuardianType47) {
                 level2Entities_[emittedIndex].renderProfile = WorldActorRenderProfile::inlineSelectorNoCallback;
             }
             const auto emittedActorSlot =
                 level2EntityActorPoolSlots_[emittedIndex];
             if (
-                !spawnGuardianType47
+                !actorWalk.spawnGuardianType47
                 && emittedActorSlot == retiredType48ActorSlot
             ) {
                 // The replacement occupies a Type-48 record retired earlier
@@ -3585,19 +2950,19 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
                 // advances the replacement on this boundary (v13 tick 10138).
                 auto& replacement = level2Entities_[emittedIndex];
                 replacement.presenterDistance =
-                    guardianType48Source.presenterDistance;
+                    actorWalk.guardianType48Source.presenterDistance;
                 replacement.targetHeading =
-                    guardianType48Source.targetHeading;
+                    actorWalk.guardianType48Source.targetHeading;
                 advanceCampaignType48(replacement);
             }
             ++level2ActiveEnemyCount_;
             ++level2SpawnedEnemyCount_;
         }
     }
-    if (level3Burst) {
-        deployLevel3GuardianBurst(*level3Burst);
+    if (actorWalk.level3Burst) {
+        deployLevel3GuardianBurst(*actorWalk.level3Burst);
     }
-    if (deployPostWave && level2PostWaveObjectIndex_ == static_cast<std::size_t>(-1)) {
+    if (actorWalk.postWaveSource && level2PostWaveObjectIndex_ == static_cast<std::size_t>(-1)) {
         const bool guardianMetadata = playableCampaignFrames_
             ? campaignModelsBound_ && campaignModels_[44].radius != 0 && campaignModels_[44].animationLimit != 0
             : level5GuardianRadius_ != 0 && level5GuardianAnimationLimit_ != 0;
@@ -3617,11 +2982,11 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
             : activeCampaignLevel_ == 4 ? level5GuardianRadius_
             : activeCampaignLevel_ == 1 ? 1147 : 0;
         deployed.position = {
-            postWaveSource.position.x,
-            postWaveSource.position.y,
+            actorWalk.postWaveSource->position.x,
+            actorWalk.postWaveSource->position.y,
             0,
         };
-        deployed.yaw = postWaveSource.targetHeading;
+        deployed.yaw = actorWalk.postWaveSource->targetHeading;
         deployed.stateBytes4dTo52 = {255, playableCampaignFrames_ ? campaignGuardianInitialHealth(static_cast<std::uint8_t>(activeCampaignLevel_),runtimeDifficulty_)
             : activeCampaignLevel_ == 4 ? level5GuardianHealth : std::uint8_t{20}, 2, 0, 5, 0};
         deployed.animatedModelPresenterEnabled = playableCampaignFrames_ || activeCampaignLevel_ == 1 || activeCampaignLevel_ == 4;
@@ -3668,11 +3033,11 @@ void GameplayModel::advanceLevel2(const GameplayInput& input, Level2FrameRendere
         || level2PlayerProjectileAllocated || actorAllocatedThisBoundary
         || level2RetiredEffectRebuildReported_ || retirement.effectCount != 0
         || level2Entities_.size() != level2EntityCountAtStart) {
-        if (guardianAllocatedThisBoundary && level2Visibility_.tracking() == VisibilityTracking::unknown) {
+        if (actorWalk.guardianAllocatedThisBoundary && level2Visibility_.tracking() == VisibilityTracking::unknown) {
             //The legacy component presenter rebuilds membership without a source visibility receipt.
             level2ActiveListOrder_ = level2AllocationListOrder_;
         }
-        if (activeCampaignLevel_ != 4 && !playableLevel1 && !guardianAllocatedThisBoundary) {
+        if (activeCampaignLevel_ != 4 && !playableLevel1 && !actorWalk.guardianAllocatedThisBoundary) {
             level2Visibility_.invalidate();
         } else if (retirement.lastNonEffectRemoval != static_cast<std::size_t>(-1) || retirement.effectCount != 0) {
             level2Visibility_.removalSucceeded();

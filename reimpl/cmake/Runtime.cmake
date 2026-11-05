@@ -18,6 +18,7 @@ add_library(stellar7_core
     src/campaign_player_contact.cpp
     src/campaign_projectile_hits.cpp
     src/campaign_actor_contact.cpp
+    src/campaign_actor_walk.cpp
     src/campaign_frame_boundary.cpp
     src/campaign_guardian.cpp
     src/campaign_guardian_adapter.cpp

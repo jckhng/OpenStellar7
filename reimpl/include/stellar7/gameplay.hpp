@@ -643,6 +643,12 @@ private:
         std::size_t activePosition;
     };
     struct CampaignRetirement;
+    static constexpr std::size_t level2ProjectilePoolSize_ = 8;
+    using CampaignProjectileSlots = std::array<bool, level2ProjectilePoolSize_>;
+    CampaignProjectileSlots advanceCampaignProjectileLifetimes(const CampaignProjectileSlots& activeAtStart,
+        CampaignRetirement& retirement);
+    void retireCampaignTerminalPlayerProjectiles(const CampaignProjectileSlots& terminalPlayerProjectiles,
+        CampaignRetirement& retirement);
     enum class CampaignRewardDomain { shared, physicalLevel2Guardian };
     void retireCampaignEntity(std::size_t removed, CampaignRetirement& retirement) noexcept;
     bool spawnCampaignTransientEffect(const Level1Entity& source,
@@ -660,6 +666,20 @@ private:
     void advanceLiveCampaignOrdinary(std::size_t index, const Level1Entity& behaviorTarget);
     void advanceCampaignType6(std::size_t index);
     void advanceCampaignType9(std::size_t index);
+    struct CampaignActorWalkResult {
+        std::size_t retireCompletionObject = static_cast<std::size_t>(-1);
+        bool spawnGuardianType48 = false;
+        bool spawnGuardianType47 = false;
+        std::optional<Level1Entity> level3Burst;
+        std::optional<Level1Entity> postWaveSource;
+        Level1Entity guardianType48Source{};
+        bool guardianAllocatedThisBoundary = false;
+    };
+    CampaignActorWalkResult advanceCampaignActorWalk(const CampaignContactStart& start,
+        const Level1Entity& behaviorTarget, const CampaignProjectileContactResult& projectileContact,
+        const CampaignCombatCallbacks& combat, bool physicalLevel2Guardian);
+    enum class CampaignArrivalAction { none, deployGuardian, retire };
+    static CampaignArrivalAction advanceCampaignArrivalCraft(Level1Entity& entity);
     void advancePhysicalLevel2Guardian(std::size_t slot, const Level1Entity& behaviorTarget,
         const CampaignProjectileContactResult& projectileContact, bool& guardianAllocatedThisBoundary);
     void advanceLevel5Guardian(Level1Entity& actor, std::size_t ownerSlot);
@@ -861,7 +881,6 @@ private:
     std::uint64_t level2AllocationRevision_ = 0;
     std::uint64_t level2NonProjectileAllocationRevision_ = 0;
     std::uint64_t level2FixedAllocationRevision_ = 0;
-    static constexpr std::size_t level2ProjectilePoolSize_ = 8;
     static constexpr std::size_t playerCannonSlotCount_ = 2;
     std::array<Level1Entity, level2ProjectilePoolSize_>
         level2ProjectilePool_{};

@@ -94,9 +94,13 @@ uses swap-back allocation-list order, then remaps compact contacts without chang
 encoded retired fixed contacts. Non-effect removals and presenter-only effect
 retirements have different rebuild/sort consequences. Their temporary counters and
 borrowed behavior target live in one frame-local `CampaignRetirement`; no additional
-actor/pool owner is created. `campaign_reward.cpp` retains collision clearance,
-pool-full fallback, RNG and nested reward order. The dispatcher still chooses when
-to call each operation. The resource-free allocation test covers these boundaries.
+actor/pool owner is created. The resource-free allocation test covers retirement
+and effect reuse. Projectile lifetime advancement uses frame-start membership.
+The dispatcher retires Level 5 terminal-shot slots after motion and player-shot
+contact, using the same retirement bookkeeping as early expiry.
+
+`campaign_reward.cpp` retains collision clearance, pool-full fallback, RNG and
+nested reward order. The dispatcher still chooses when to deploy the reward.
 
 `campaign_ordinary_adapter.cpp` connects the typed behavior helpers to projectile
 allocation and writes live actor shadows back through their physical slots. It
@@ -109,8 +113,15 @@ retargets the offset shot through the newly occupied projectile pool slot.
 `campaign_guardian_adapter.cpp` binds inherited projectile records, contacts, RNG,
 damage, retirement and attack callbacks. Preserve the physical Level 2 emission's
 allocation-before-origin-read order: the new actor can reuse the source slot.
-The dispatcher still selects and visits actors in the same order, then processes
-deferred emissions and frame work. Adapters borrow the existing model and context.
+Adapters borrow the existing model and context. `campaign_actor_walk.cpp` visits
+inherited callbacks in their frame-start order. The physical walk resolves each
+slot at its turn, including retired records. The legacy walk uses the remapped
+compact order. The dispatcher consumes the walk's deferred requests after the
+main-view refresh and retains control of the final visibility rebuild.
+
+The Type 7 arrival craft callback reports deployment or retirement when its
+state machine requests it. The dispatcher captures the deployment pose during
+the actor walk and handles both requests at their existing deferred stages.
 
 The Level 3 guardian update returns a source snapshot when its timer requests a
 Type-47 burst. The snapshot precedes animation selector writeback. The actor walk
@@ -121,7 +132,8 @@ the two launches checks capacity before consuming its initializer RNG draws.
 
 Pool/contact operations now have private, named interfaces and reproducible fast
 contracts plus a retained campaign gate. The remaining concentration is in
-`GameplayModel::advanceLevel2` (ordered actor walk and inline behavior branches),
+`GameplayModel::advanceLevel2` (movement, effect presentation and deferred work),
+`campaign_actor_walk.cpp` (inherited traversal and legacy behavior branches),
 `Level1State::advanceTickImpl` (older source-path update ordering), and the optional
 `diagnostic_main.cpp` command chain. These still require substantial context.
 

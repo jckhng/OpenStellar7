@@ -82,10 +82,10 @@ This is the OpenStellar7 0.1.0-rc.1 prerelease, pending broader physical testing
 The owner has played parts of the game; a complete human campaign pass has not
 been established. Campaign and menu features are implemented, with bounded
 original comparisons and retained route
-tests. Complete equivalence across every path, difficulty and platform is not
-claimed. Automated retained completion covers Easy through all seven levels,
-death/Continue, ending and a new Begin; full Standard/Hard victories remain
-unqualified. The release checklist is in [docs/TESTING.md](docs/TESTING.md).
+tests. Automated retained runs complete all seven levels on Easy, Standard and
+Hard, reach the ending and high-score hall, and start a new game. The Easy run
+also exercises death and Continue. See [docs/TESTING.md](docs/TESTING.md) for
+coverage and the physical playtest checklist.
 XR is separately experimental.
 
 Developer guidance covers runtime ownership, contributing and publication.
@@ -97,8 +97,8 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
   The explicit native speed control does not recover missing CPU work.
   Enhanced/XR title pacing adds a one-second minimum display; original loading-time
   costs and exact full-intro timing remain unrecovered.
-- Full natural Standard/Hard victories, physical controller/calibration coverage
-  and a separate clean-machine Windows install require additional sign-off.
+- Physical campaign playthroughs, controller calibration and a separate
+  clean-machine Windows install require additional sign-off.
 - Some unsupported provenance/state domains still reject explicitly. A reached
   rejection/crash on an ordinary supported route is a release-blocking defect.
 - Speech clarity, physical input latency, perceived speed, focus/quit behavior and

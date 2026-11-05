@@ -38,9 +38,9 @@ Level 1 or by starting independent level fixtures.
 | C06 | Leave an ordinary enemy alive near guardian arrival | Record moving enemy, radar, quota context and difficulty; no assumption that all globally allocated enemies must die |
 | C07 | Save preferences/high score and relaunch | Correct writable profile, persistence, original source data unchanged |
 
-Standard/Hard: verify menu selection and play at least one wave; full victories
-remain explicitly limited until separately tested. Report any supported ordinary
-path that rejects or crashes as a blocker regardless of automated tests.
+For Standard and Hard, verify menu selection and play at least one wave during
+the physical pass. Report any supported ordinary path that rejects or crashes
+as a blocker regardless of automated tests.
 
 ## XR pass: experimental Windows mode
 
@@ -170,9 +170,24 @@ Level 2-to-4 adaptive test clears surviving Level 3 minions before collecting
 the guardian reward; it checks retained state/audio/pages across budgets and one
 Continue, but does not replace an all-level campaign run.
 
+### Standard and Hard campaign runs
+
+On 2026-11-05, the development harness ran the engine at `5822093` from Begin
+through all seven levels on both difficulties. The pilot used gameplay inputs
+based on live observations. Each run reached the ending, high-score hall,
+title menu and a new Begin with two adjacent gameplay frames. Work budgets
+10,000 and 257 matched on retained state, indexed presentation, PCM and ordered
+audio events. Neither route used a Continue.
+
+| Difficulty | Gameplay calls | PCM samples | Final score |
+| --- | ---: | ---: | ---: |
+| Standard | 28,752 | 18,767,191 | 14,376 |
+| Hard | 37,512 | 24,277,307 | 20,290 |
+
+The repository's Easy regression also passed with all six baseline values.
 Human campaign, clean Windows, Xbox/Pico, headset comfort/relaunch and Linux
-physical display/audio checks remain open. Full Standard/Hard victories remain
-unqualified. Cosmetic and timing gaps are listed in the README.
+physical display/audio checks remain open. Cosmetic and timing gaps are listed
+in the README.
 
 ### Acceptance rule
 

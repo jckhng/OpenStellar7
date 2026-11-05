@@ -5,11 +5,31 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string_view>
 
 namespace {
 using namespace stellar7;
 using test::requireCampaignComparison;
-constexpr unsigned campaignCalls = 27733;
+struct CampaignRoute {
+    CampaignDifficulty difficulty;
+    unsigned calls;
+    unsigned deaths;
+    unsigned shields;
+};
+
+CampaignRoute campaignRoute(const std::string_view name) {
+    if (name == "easy") {
+        return {CampaignDifficulty::easy, 27733, 2, 3};
+    }
+    if (name == "standard") {
+        return {CampaignDifficulty::standard, 28752, 0, 1};
+    }
+    if (name == "hard") {
+        return {CampaignDifficulty::hard, 37512, 0, 0};
+    }
+    throw std::invalid_argument("difficulty must be easy, standard or hard");
+}
+
 constexpr unsigned levelCount = 7;
 constexpr unsigned allLevels = (1U << levelCount) - 1U;
 constexpr unsigned historyInterval = 256;
@@ -26,7 +46,7 @@ struct InputRun {
     std::string text;
 };
 
-std::vector<InputRun> readInputs(const std::filesystem::path& path) {
+std::vector<InputRun> readInputs(const std::filesystem::path& path, const unsigned campaignCalls) {
     std::ifstream file(path);
     std::string line;
     requireCampaignComparison(bool(std::getline(file, line)) && line == "stellar7-campaign-inputs-v1",
@@ -171,10 +191,10 @@ void begin(RecoveredFrontend& frontend, std::vector<std::int16_t>& pcm, Observat
 }
 
 void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
-    const std::filesystem::path& expectedPath, unsigned& call) {
+    const std::filesystem::path& expectedPath, const CampaignRoute& route, unsigned& call) {
     HighscoreTable profile({}, {});
-    // Owned, empty test profile: easy, keyboard, music/story off. No FAME.HAL reads or writes.
-    profile.setConfiguration(CockpitSettings{81, {1, 0, 0, 1, 0, 0}});
+    // The test profile uses keyboard controls and disables music and story.
+    profile.setConfiguration(CockpitSettings{81, {1, 0, 0, 1, static_cast<std::int16_t>(route.difficulty), 0}});
     const auto files = resolveNativeData(root);
     if (!files.validation.ok) { throw std::runtime_error(files.validation.message); }
     auto data = loadGameplayAssets(root, {}, {}, profile, &files);
@@ -198,7 +218,7 @@ void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
     const auto* left = a->session(); const auto* right = b->session();
     const auto* synth = &left->synth();
     unsigned visited = 0, deaths = 0, retries = 0, newFrames = 0, shields = 0, decoys = 0;
-    bool ending = false, title = false, restarted = false;
+    bool ending = false, hall = false, title = false, restarted = false;
     for (const auto& run : inputs) {
         GameplayInput input{};
         input.left = run.keys & 1; input.right = run.keys & 2;
@@ -234,6 +254,10 @@ void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
                 boundary ? test::CampaignComparisonStage::boundary : test::CampaignComparisonStage::frame);
             GameplayModelTestAccess::compare(after, right->model());
             observations.delivery(x); observations.frame(*left);
+            if (ordinary(after.phase())) {
+                requireCampaignComparison(after.runtimeDifficulty() == route.difficulty,
+                    "campaign difficulty changed during replay");
+            }
             if (ordinary(after.phase()) && !restarted) {
                 requireCampaignComparison(after.campaignLevel() < levelCount, "invalid gameplay bank");
                 visited |= 1U << after.campaignLevel();
@@ -241,6 +265,7 @@ void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
             if (ordinary(phase) && after.phase() == GameplayPhase::failurePreExplosionBlackout) { ++deaths; }
             if (after.remainingContinues() < stock) { ++retries; }
             ending = ending || after.phase() == GameplayPhase::endingEntry;
+            hall = hall || (ending && after.phase() == GameplayPhase::highscoreHall);
             if (phase == GameplayPhase::nativeMenu) {
                 requireCampaignComparison(ending, "returned to title before ending");
                 title = true;
@@ -255,8 +280,9 @@ void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
             requireCampaignComparison(after.phase() != GameplayPhase::campaignEnded, "campaign stock exhausted");
         }
     }
-    requireCampaignComparison(visited == allLevels && ending && title && restarted && newFrames == 2
-        && deaths == 2 && retries == 2 && shields == 3 && decoys == 3, "campaign route coverage changed");
+    requireCampaignComparison(visited == allLevels && ending && hall && title && restarted && newFrames == 2
+        && deaths == route.deaths && retries == route.deaths && shields == route.shields && decoys == 3,
+        "campaign route coverage changed");
     const std::array<std::uint64_t, 6> actual{a->elapsedSamples(), observations.state.value(), observations.pixels.value(),
         observations.audio.value(), observations.events.value(), observations.projectiles.value()};
     constexpr std::array names{"sample count", "state", "indexed video", "PCM", "audio events", "projectile storage"};
@@ -275,14 +301,15 @@ void run(const std::filesystem::path& root, const std::vector<InputRun>& inputs,
 } // namespace
 
 int main(const int argc, char** argv) {
-    if (argc != 4) {
-        std::cerr << "usage: full-campaign DATA_DIR INPUTS EXPECTED\n";
+    if (argc != 4 && argc != 5) {
+        std::cerr << "usage: full-campaign DATA_DIR INPUTS EXPECTED [easy|standard|hard]\n";
         return 2;
     }
     unsigned call = 0;
     try {
-        const auto inputs = readInputs(argv[2]);
-        run(argv[1], inputs, argv[3], call);
+        const auto route = campaignRoute(argc == 5 ? argv[4] : "easy");
+        const auto inputs = readInputs(argv[2], route.calls);
+        run(argv[1], inputs, argv[3], route, call);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "call=" << call << " error=" << error.what() << '\n';

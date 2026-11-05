@@ -184,7 +184,14 @@ audio events. Neither route used a Continue.
 | Standard | 28,752 | 18,767,191 | 14,376 |
 | Hard | 37,512 | 24,277,307 | 20,290 |
 
-The repository's Easy regression also passed with all six baseline values.
+The repository replays the recorded inputs for each difficulty with the same
+runner. CTest registers `stellar7_playable_standard_campaign_tests` and
+`stellar7_playable_hard_campaign_tests` alongside the Easy regression.
+All three use the `full-campaign` label. The Standard and Hard input fixtures
+store the pilot's held controls, system actions and high-score text in the
+same format as Easy. The test checks the selected difficulty during gameplay
+and compares all six baseline values per route.
+
 Human campaign, clean Windows, Xbox/Pico, headset comfort/relaunch and Linux
 physical display/audio checks remain open. Cosmetic and timing gaps are listed
 in the README.

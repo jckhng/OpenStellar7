@@ -73,7 +73,8 @@ cmake --build build/enhanced --config Release --target stellar7_campaign_allocat
 ctest --test-dir build/enhanced -C Release --output-on-failure -R '^stellar7_campaign_allocation_tests$'
 ```
 
-The full retained Easy campaign has repository-owned inputs and expectations.
+The full retained campaigns for Easy, Standard and Hard have repository-owned
+inputs and expectations.
 Configure `STELLAR7_TEST_RESOURCE_DIR` with all 20 supported original RES files.
 The shared resource-test setup requires uppercase filenames for `COCKPIT.RES`,
 `STELLAR.RES`, `STELART.RES`, `LEVEL1.RES`, and `LEVEL2.RES`. The full campaign
@@ -81,13 +82,14 @@ test accepts either case for the other filenames. Then run:
 
 ```sh
 cmake --build build/enhanced --config Release --target stellar7_playable_full_campaign_tests
-ctest --test-dir build/enhanced -C Release --output-on-failure -R '^stellar7_playable_full_campaign_tests$'
+ctest --test-dir build/enhanced -C Release --output-on-failure -L '^full-campaign$'
 ```
 
 No harness, private replay directory or player save is needed. The test uses an
-empty in-memory profile and checks startup, seven levels, two Continues, ending,
-Hall/title and a new Begin with adjacent frames. Allow several minutes; run it
-at integration milestones. See [coverage and limits](docs/TESTING.md#recorded-engine-coverage).
+empty in-memory profile for each route and checks startup, seven levels, ending,
+Hall/title and a new Begin with adjacent frames. The Easy route also exercises
+two Continues. Allow several minutes per route and run the group at integration
+milestones. See [coverage and limits](docs/TESTING.md#recorded-engine-coverage).
 
 CPack creates assets-free runtime archives. It does not publish them. Do not add
 your `datafile/`, profiles, private test evidence or original captures to archives.

@@ -694,11 +694,19 @@ if(STELLAR7_TEST_RESOURCE_DIR)
         target_compile_options(stellar7_playable_full_campaign_tests PRIVATE
             $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
         target_link_options(stellar7_playable_full_campaign_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/STACK:16777216>)
-        add_test(NAME stellar7_playable_full_campaign_tests COMMAND stellar7_playable_full_campaign_tests
-            "${STELLAR7_TEST_RESOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/easy_campaign.inputs.txt"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/easy_campaign.expected.txt")
-        set_tests_properties(stellar7_playable_full_campaign_tests PROPERTIES
-            LABELS "resource-backed;actual-startup;playable-campaign;full-campaign" TIMEOUT 1800)
+        foreach(difficulty easy standard hard)
+            if(difficulty STREQUAL "easy")
+                set(campaign_test_name stellar7_playable_full_campaign_tests)
+            else()
+                set(campaign_test_name stellar7_playable_${difficulty}_campaign_tests)
+            endif()
+            set(campaign_fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${difficulty}_campaign")
+            add_test(NAME "${campaign_test_name}" COMMAND stellar7_playable_full_campaign_tests
+                "${STELLAR7_TEST_RESOURCE_DIR}" "${campaign_fixture}.inputs.txt"
+                "${campaign_fixture}.expected.txt" "${difficulty}")
+            set_tests_properties("${campaign_test_name}" PROPERTIES
+                LABELS "resource-backed;actual-startup;playable-campaign;full-campaign" TIMEOUT 1800)
+        endforeach()
     endif()
 endif()
 

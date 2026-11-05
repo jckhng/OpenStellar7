@@ -609,6 +609,19 @@ private:
     enum class Level2Continuation { frameEntry, successReturn };
     void advanceLevel2(const GameplayInput& input, Level2FrameRenderer* renderer = nullptr,
         Level2Continuation continuation = Level2Continuation::frameEntry);
+    void prepareFirstLevel2SourceFrame(const GameplayInput& input, Level2FrameRenderer* renderer);
+    void qualifyLevel2SourcePrefix(const GameplayInput& input, Level2FrameRenderer* renderer);
+    void advanceLevel2SourcePrefix(const GameplayInput& input, Level2FrameRenderer& renderer);
+    void expireLevel2EffectPresentation();
+    void sortLevel2ActiveByDistance();
+    struct Level2EntityIdentity {
+        std::uint8_t pool;
+        std::size_t slot;
+        std::size_t activePosition;
+    };
+    std::size_t level2FixedPoolSlot(std::size_t entityIndex) const noexcept;
+    std::vector<Level2EntityIdentity> captureLevel2ActiveIdentities(const std::vector<std::size_t>& order) const;
+    std::vector<std::size_t> remapLevel2BoundaryOrder(const std::vector<Level2EntityIdentity>& identities) const;
     bool consumeLevel2DeferredTail();
     PlayableJumpState playableJumpState() const;
     void commitPlayableJump(const PlayableJumpResult& result);

@@ -52,6 +52,15 @@ inside their existing adapters. Do not replace work with average frame costs,
 copy later original state into a retained run, or suppress an unsupported-path
 exception to make a test pass.
 
+`campaign_frame_boundary.cpp` contains source-prefix qualification/renderer
+handoffs, expiry of the previous display's effect records, inherited pool identity
+capture/remapping and end-of-update distance sorting. `gameplay.cpp` retains their
+call order. Effect expiry must
+precede callback identity capture; distance sorting keeps the original strict
+comparison and swap order and runs only when pool membership permits it. Boundary
+identities remain a frame-local value; remapping reads the live pool maps after
+compaction instead of retaining stale compact indices.
+
 The main frame dispatcher remains large and coupled. Further branch/context
 refactoring is documented debt, not evidence of global DOS equivalence. Before
 changing it, identify affected aliases and compare retained state, indexed pixels
@@ -59,10 +68,23 @@ and palette, ordered audio and device phase at the relevant boundaries.
 
 Developer trace/replay commands are available in the optional `stellar7-tools`
 target (`STELLAR7_BUILD_DIAGNOSTICS=ON`). It is off by default and excluded from
-runtime installation. Developer warnings and GCC/Clang ASan/UBSan are also opt-in;
+runtime installation. Its internal `diagnostic_commands.hpp` interface routes
+Sound Blaster work commands to `diagnostic_sound_blaster_work.cpp`. Unmatched
+commands or argument counts retain the original CLI fallback. These adapters
+compile only into `stellar7-tools`. Developer warnings and GCC/Clang ASan/UBSan
+are also opt-in;
 see [BUILDING.md](../BUILDING.md). Tests include controlled entries and retained
 routes; neither finite coverage nor a showcase video qualifies every input,
 difficulty, original timing behavior or physical headset/controller combination.
+
+## Build organization
+
+`reimpl/CMakeLists.txt` sets the language/toolchain policy and includes modules
+from `reimpl/cmake/`. `Runtime.cmake` defines player libraries, host adapters and
+the optional diagnostic executable. `Tests.cmake` and `EnhancedTests.cmake`
+register tests only when standard CMake `BUILD_TESTING` is enabled (the default).
+Developer checks and packaging apply after target creation. These modules share
+the project directory scope, preserving source paths and sanitizer coverage.
 
 ## Contributing
 

@@ -227,6 +227,13 @@ GameplayInput a50eWindowControls(const GameplayModel& model, const Level1Entity&
 GameplayInput combatControls(const GameplayModel& model) {
     const auto reward = find(model,25,25);
     if (reward != noObject) {
+        if (model.campaignLevel() == 2) {
+            // The guardian's surviving minions still own contact damage.
+            const auto minion = find(model,47,47);
+            if (minion != noObject) {
+                return test::campaignPilotControls(model,model.level2Entities()[minion],test::CampaignPilotGoal::combat);
+            }
+        }
         if (model.campaignLevel() == 1) {
             auto input = approach(model,model.level2Entities()[reward],test::CampaignPilotGoal::collect);
             input.fire = true;

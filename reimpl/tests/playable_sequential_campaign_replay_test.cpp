@@ -166,10 +166,17 @@ public:
         for (const auto& event:delivery.events) {
             requireCampaignComparison(eventCursor_<events_.size(),"extra historical event");
             const auto& row=events_[eventCursor_];
-            requireCampaignComparison(number(row,0)==eventCursor_++ && number(row,1)==call
-                && number(row,2)==(frontend.session()?frontend.session()->model().ticks():0)
-                && number(row,3)==event.loopTick && number(row,4)==event.eventId,
-                "historical ordered gameplay event diverged");
+            const auto ordinal = eventCursor_++;
+            const auto modelTick = frontend.session() ? frontend.session()->model().ticks() : 0;
+            if (number(row,0)==ordinal && number(row,1)==call && number(row,2)==modelTick
+                && number(row,3)==event.loopTick && number(row,4)==event.eventId) {
+                continue;
+            }
+            std::ostringstream message;
+            message << "historical ordered gameplay event diverged; expected(ordinal,call,tick,loop,event)="
+                << row.at(0) << ',' << row.at(1) << ',' << row.at(2) << ',' << row.at(3) << ',' << row.at(4)
+                << "; actual=" << ordinal << ',' << call << ',' << modelTick << ',' << event.loopTick << ',' << event.eventId;
+            throw std::runtime_error(message.str());
         }
     }
     void boundary(const unsigned call,const NativeGameplaySession& session,const std::uint32_t oldScore) {

@@ -80,7 +80,7 @@ CHECKSUMS.sha256 to identify the packaged source and binaries.
 | --- | --- | --- |
 | Source boundary | Standalone Windows/Linux build from the repository root; no dependency on private harness files | Use the matching release-index.json for this snapshot's results |
 | Distribution audit | Original resources, captures, profiles, binaries, SDKs and local paths/config absent; third-party notices retained | Source and runtime archive audits passed |
-| Recent engine regression | Fresh retained full campaign after the latest allocation/list changes, plus focused state/render/audio checks | Easy1-7 route and focused checks passed |
+| Recent engine regression | Fresh retained full campaign after the latest allocation/list changes, plus focused state/render/audio checks | Fresh Easy1-7 route and focused checks passed; legacy AD04 mismatch remains documented below |
 | Clean Windows | Assets-free install/data import/writable profile/launch on a separate Windows10/11 x64 system without development tools | Tester + release review, open |
 | Desktop physical | TESTING P01-P07 and C01-C07, no blocker | Primary tester, open |
 | Optional controller/Linux claims | Real device/display/audio checks, or restrict release claims to checked scope | Open/limited |
@@ -93,7 +93,18 @@ The retained Easy route completed all seven levels, two death/Continue cycles,
 ending/Hall/title and a new Begin plus two frames, using 27,728 calls and
 18,197,743 samples. Cleanup comparisons retained state, audio and presentation
 results. This is recorded automated evidence from the development harness.
-Packaging reuses that evidence and records fresh build/import/archive checks.
+A fresh 2026-11-05 run against the cleaned engine repeats this route with the
+same call/sample counts; all five progression/input/text/armor/actor traces match
+the earlier qualification. Physical playtesting remains separate.
+
+The optional AD04 native replay predates the corrected hostile-projectile
+collision path. It fails at event 1: current impact 6 at call 34 versus the old
+next-shot event 2 at call 39. It is a historical native witness, not an original
+DOS oracle or current campaign qualification. Keep its inputs/expectations intact;
+current campaign qualification uses a legal run under corrected combat. The separate
+Level 2-to-4 adaptive test clears surviving Level 3 minions before collecting
+the guardian reward; it checks retained state/audio/pages across budgets and one
+Continue, but does not replace an all-level campaign run.
 
 Human campaign, clean Windows, Xbox/Pico, headset comfort/relaunch and Linux
 physical display/audio checks remain open. Full Standard/Hard victories remain

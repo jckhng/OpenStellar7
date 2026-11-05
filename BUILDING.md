@@ -40,7 +40,12 @@ The Windows toolchain's SDK is a build dependency, not a player installation.
 ## Original presentation, tests and archives
 
 Use a separate build directory with `-DSTELLAR7_ENHANCED=OFF` for the original
-presentation. Resource-backed tests are optional:
+presentation. Tests are enabled by default. For a player-only build, configure
+with `-DBUILD_TESTING=OFF`; this omits test executables and test-only dependencies.
+The optional `stellar7-tools` target remains controlled separately by
+`STELLAR7_BUILD_DIAGNOSTICS`.
+
+Resource-backed tests are optional:
 configure `STELLAR7_TEST_RESOURCE_DIR` to your own supported original data.
 Tests are CMake targets; build the desired ones before CTest, for example:
 
